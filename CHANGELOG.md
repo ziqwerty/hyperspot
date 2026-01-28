@@ -9,6 +9,226 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-types-registry-v0.1.1) - 2026-01-28
+
+### Other
+
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+- Normalize modules (types registry and simple user settings) paths to snake_case (by @alizid10) - #314
+
+### Contributors
+
+* @nanoandrew4
+* @MikeFalcon77
+* @github-actions[bot]
+* @alizid10
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-tenant-resolver-gw-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+- Normalize modules (types registry and simple user settings) paths to snake_case (by @alizid10) - #314
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+* @alizid10
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-static-tr-plugin-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+- Normalize modules (types registry and simple user settings) paths to snake_case (by @alizid10) - #314
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+* @alizid10
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-single-tenant-tr-plugin-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+- Normalize modules (types registry and simple user settings) paths to snake_case (by @alizid10) - #314
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+* @alizid10
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-tenant-resolver-sdk-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-nodes-registry-v0.1.1) - 2026-01-28
+
+### Other
+
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+
+### Contributors
+
+* @nanoandrew4
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-nodes-registry-sdk-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+
+## [0.1.5](https://github.com/ziqwerty/hyperspot/releases/tag/cf-modkit-node-info-v0.1.5) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+
+### Contributors
+
+* @MikeFalcon77
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-module-orchestrator-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-file-parser-v0.1.1) - 2026-01-28
+
+### Other
+
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+
+### Contributors
+
+* @nanoandrew4
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-types-registry-sdk-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-grpc-hub-v0.1.1) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+- release (by @github-actions[bot]) - #317
+
+### Contributors
+
+* @MikeFalcon77
+* @github-actions[bot]
+
+## [0.1.1](https://github.com/ziqwerty/hyperspot/releases/tag/cf-api-gateway-v0.1.1) - 2026-01-28
+
+### Other
+
+- chore(deps): (by @MikeFalcon77) - #325
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+
+### Contributors
+
+* @MikeFalcon77
+* @nanoandrew4
+
+## [0.1.5](https://github.com/ziqwerty/hyperspot/releases/tag/cf-modkit-auth-v0.1.5) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+
+### Contributors
+
+* @MikeFalcon77
+
+## [0.1.5](https://github.com/ziqwerty/hyperspot/releases/tag/cf-modkit-v0.1.5) - 2026-01-28
+
+### Fixed
+
+- *(modkit-db)* add `engine` to DbConnConfig (by @MikeFalcon77)
+
+### Other
+
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+
+### Contributors
+
+* @MikeFalcon77
+* @nanoandrew4
+
+## [0.1.5](https://github.com/ziqwerty/hyperspot/releases/tag/cf-modkit-sdk-v0.1.5) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+
+### Contributors
+
+* @MikeFalcon77
+
+## [0.1.5](https://github.com/ziqwerty/hyperspot/releases/tag/cf-modkit-odata-macros-v0.1.5) - 2026-01-28
+
+### Other
+
+- *(modules)* Add module descriptions, missed README.MD and some crate meta (by @MikeFalcon77)
+
+### Contributors
+
+* @MikeFalcon77
+
+## [0.1.5](https://github.com/ziqwerty/hyperspot/releases/tag/cf-modkit-macros-v0.1.5) - 2026-01-28
+
+### Other
+
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+- Merge branch 'main' into snake-case-enforcement (by @nanoandrew4) - #247
+
+### Contributors
+
+* @nanoandrew4
+
 ## [0.1.4](https://github.com/hypernetix/hyperspot/compare/cf-system-sdks-v0.1.3...cf-system-sdks-v0.1.4) - 2026-01-28
 
 ### Other

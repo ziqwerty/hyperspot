@@ -9,6 +9,12 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.2.9](https://github.com/ziqwerty/hyperspot/compare/types-sdk-v0.2.8...types-sdk-v0.2.9) - 2026-02-13
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.2.8](https://github.com/cyberfabric/cyberfabric-core/compare/types-sdk-v0.2.7...types-sdk-v0.2.8) - 2026-02-12
 
 ### Other

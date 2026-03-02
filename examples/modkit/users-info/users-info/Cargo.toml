@@ -14,6 +14,8 @@ default = ["odata"]
 odata = []          # enable streaming API with typed queries
 integration = []    # gate integration tests
 
+db-mysql = ["sea-orm/sqlx-mysql", "sea-orm-migration/sqlx-mysql", "modkit-db/mysql"]
+
 [dependencies]
 # SDK - public API, models, and errors
 users-info-sdk = { path = "../users-info-sdk", features = ["odata"] }

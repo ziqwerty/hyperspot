@@ -262,6 +262,105 @@ pub fn default_logging_config() -> LoggingConfig {
     logging
 }
 
+/// A custom Figment [`Provider`] that wraps [`Env`] and duplicates
+/// underscored dict keys with a hyphen-normalized variant (`_` → `-`)
+/// **only** at config depths where the YAML file actually contains
+/// hyphenated keys.
+///
+/// The set of paths to normalize is discovered at runtime by scanning the
+/// YAML config — no hardcoded list of sections is needed.  When a new
+/// section with hyphenated keys appears in YAML, the provider handles it
+/// automatically.
+struct HyphenNormalizingEnv {
+    inner: figment::providers::Env,
+    /// Paths (as vectors of key segments from the config root) at which
+    /// dict keys should be duplicated with `_` → `-`.
+    hyphenated_paths: Vec<Vec<String>>,
+}
+
+impl HyphenNormalizingEnv {
+    fn new(hyphenated_paths: Vec<Vec<String>>) -> Self {
+        Self {
+            inner: figment::providers::Env::prefixed("APP__").split("__"),
+            hyphenated_paths,
+        }
+    }
+
+    /// Scan a [`serde_json::Value`] tree and collect every path (as a
+    /// list of parent key segments) that leads to a dict where **any key**
+    /// contains a hyphen.  These are the dict levels that need
+    /// underscore → hyphen normalization in the env layer.
+    fn discover_hyphenated_paths(value: &serde_json::Value) -> Vec<Vec<String>> {
+        let mut result = Vec::new();
+        Self::walk(value, &mut Vec::new(), &mut result);
+        result
+    }
+
+    fn walk(
+        value: &serde_json::Value,
+        current_path: &mut Vec<String>,
+        result: &mut Vec<Vec<String>>,
+    ) {
+        if let serde_json::Value::Object(map) = value {
+            // Check if any key at this level contains a hyphen.
+            if map.keys().any(|k| k.contains('-')) {
+                result.push(current_path.clone());
+            }
+            // Recurse into each child object.
+            for (key, child) in map {
+                current_path.push(key.clone());
+                Self::walk(child, current_path, result);
+                current_path.pop();
+            }
+        }
+    }
+
+    /// Walk into `dict` following `path` segments.  When the path is fully
+    /// consumed, normalize the keys at that level (insert `_` → `-`
+    /// duplicates).  Otherwise, descend one level deeper.
+    fn normalize_at(dict: &mut figment::value::Dict, path: &[String]) {
+        if let Some(segment) = path.first() {
+            if let Some(figment::value::Value::Dict(_tag, inner)) = dict.get_mut(segment.as_str()) {
+                Self::normalize_at(inner, &path[1..]);
+            }
+        } else {
+            let extras: Vec<_> = dict
+                .iter()
+                .filter_map(|(key, value)| {
+                    let normalized = key.replace('_', "-");
+                    if normalized == *key {
+                        None
+                    } else {
+                        Some((normalized, value.clone()))
+                    }
+                })
+                .collect();
+
+            for (key, value) in extras {
+                dict.entry(key).or_insert(value);
+            }
+        }
+    }
+}
+
+impl figment::Provider for HyphenNormalizingEnv {
+    fn metadata(&self) -> figment::Metadata {
+        self.inner.metadata()
+    }
+
+    fn data(
+        &self,
+    ) -> Result<figment::value::Map<figment::Profile, figment::value::Dict>, figment::Error> {
+        let mut data = self.inner.data()?;
+        for dict in data.values_mut() {
+            for path in &self.hyphenated_paths {
+                Self::normalize_at(dict, path);
+            }
+        }
+        Ok(data)
+    }
+}
+
 impl AppConfig {
     /// Load configuration with layered loading: defaults → YAML file → environment variables.
     /// Also normalizes `server.home_dir` into an absolute path and creates the directory.
@@ -271,7 +370,20 @@ impl AppConfig {
     pub fn load_layered(config_path: &PathBuf) -> Result<Self> {
         use figment::{
             Figment,
-            providers::{Env, Format, Serialized, Yaml},
+            providers::{Format, Serialized, Yaml},
+        };
+
+        // Scan the YAML file to discover which dict depths contain
+        // hyphenated keys (e.g. modules.api-gateway, logging.api-gateway).
+        // This drives the env-var normalizer below — no hardcoded paths.
+        let hyphenated_paths = if config_path.is_file() {
+            let raw = std::fs::read_to_string(config_path)
+                .with_context(|| format!("reading {}", config_path.display()))?;
+            let yaml_value: serde_json::Value =
+                serde_saphyr::from_str(&raw).unwrap_or(serde_json::Value::Null);
+            HyphenNormalizingEnv::discover_hyphenated_paths(&yaml_value)
+        } else {
+            Vec::new()
         };
 
         // For layered loading, start from AppConfig::default() which provides logging
@@ -280,8 +392,15 @@ impl AppConfig {
         let figment = Figment::new()
             .merge(Serialized::defaults(AppConfig::default()))
             .merge(Yaml::file(config_path))
-            // Example: APP__SERVER__PORT=8087 maps to server.port
-            .merge(Env::prefixed("APP__").split("__"));
+            // Env vars use "__" as the nesting separator, e.g.
+            //   APP__SERVER__PORT=8087  →  server.port
+            //
+            // YAML map keys may be hyphenated (e.g. "api-gateway"), but env
+            // vars cannot contain hyphens.  HyphenNormalizingEnv reads env
+            // vars once and, at each depth where the YAML file has
+            // hyphenated keys, duplicates underscored keys with a
+            // hyphenated variant so both forms are resolved.
+            .merge(HyphenNormalizingEnv::new(hyphenated_paths));
 
         let mut config: AppConfig = figment
             .extract()
@@ -2701,6 +2820,190 @@ logging:
         assert!(modules.contains_key("module_a"));
         assert!(modules.contains_key("module_b"));
         assert!(modules.contains_key("module_c"));
+    }
+
+    // ===================== HyphenNormalizingEnv Tests =====================
+
+    #[test]
+    fn test_discover_hyphenated_paths() {
+        let cases: &[(&str, serde_json::Value, Vec<Vec<&str>>)] = &[
+            (
+                "modules and logging contain hyphenated keys",
+                serde_json::json!({
+                    "server": { "home_dir": "~/.test" },
+                    "modules": {
+                        "api-gateway": { "config": { "bind_addr": "127.0.0.1:8080" } },
+                        "users-info": { "config": {} }
+                    },
+                    "logging": {
+                        "default": { "console_level": "info" },
+                        "api-gateway": { "console_level": "debug" }
+                    },
+                    "database": {
+                        "servers": { "sqlite_users": { "engine": "sqlite" } }
+                    }
+                }),
+                vec![vec!["logging"], vec!["modules"]],
+            ),
+            (
+                "no hyphenated keys anywhere",
+                serde_json::json!({
+                    "server": { "home_dir": "~/.test" },
+                    "modules": { "my_module": { "config": {} } }
+                }),
+                vec![],
+            ),
+            (
+                "nested hyphenated key under database.servers",
+                serde_json::json!({
+                    "database": {
+                        "servers": {
+                            "pg-main": { "dsn": "postgres://localhost/db" }
+                        }
+                    }
+                }),
+                vec![vec!["database", "servers"]],
+            ),
+        ];
+
+        for (label, yaml, expected) in cases {
+            let mut paths = HyphenNormalizingEnv::discover_hyphenated_paths(yaml);
+            paths.sort();
+            let expected: Vec<Vec<String>> = expected
+                .iter()
+                .map(|p| p.iter().map(|s| (*s).to_owned()).collect())
+                .collect();
+            assert_eq!(paths, expected, "case: {label}");
+        }
+    }
+
+    #[test]
+    fn test_normalize_at_only_targets_discovered_depth() {
+        use figment::value::{Dict, Value};
+
+        // Build a dict that mimics:
+        //   modules:
+        //     api_gateway:       <-- should get a "api-gateway" sibling
+        //       config:
+        //         bind_addr: ... <-- must NOT get "bind-addr" sibling
+        let mut inner_config = Dict::new();
+        inner_config.insert("bind_addr".into(), Value::from("127.0.0.1:8080".to_owned()));
+
+        let mut module_dict = Dict::new();
+        module_dict.insert(
+            "config".into(),
+            Value::Dict(figment::value::Tag::Default, inner_config),
+        );
+
+        let mut modules = Dict::new();
+        modules.insert(
+            "api_gateway".into(),
+            Value::Dict(figment::value::Tag::Default, module_dict),
+        );
+
+        let mut root = Dict::new();
+        root.insert(
+            "modules".into(),
+            Value::Dict(figment::value::Tag::Default, modules),
+        );
+
+        // Normalize at ["modules"] — only the module-name level.
+        let path = vec!["modules".to_owned()];
+        HyphenNormalizingEnv::normalize_at(&mut root, &path);
+
+        // The modules dict should now have both keys.
+        let Value::Dict(_, modules_root) = root.get("modules").unwrap() else {
+            panic!("expected dict")
+        };
+        assert!(modules_root.contains_key("api_gateway"));
+        assert!(modules_root.contains_key("api-gateway"));
+
+        // The config dict inside must NOT have "bind-addr".
+        let Value::Dict(_, gw) = modules_root.get("api_gateway").unwrap() else {
+            panic!("expected dict")
+        };
+        let Value::Dict(_, config) = gw.get("config").unwrap() else {
+            panic!("expected dict")
+        };
+        assert!(config.contains_key("bind_addr"));
+        assert!(
+            !config.contains_key("bind-addr"),
+            "struct field 'bind_addr' must not be hyphen-normalized"
+        );
+    }
+
+    #[test]
+    fn test_load_layered_preserves_hyphenated_keys() {
+        // Each case: (label, yaml, expected module keys, keys that must NOT exist)
+        type Case<'a> = (&'a str, &'a str, &'a [&'a str], &'a [&'a str]);
+        let cases: &[Case<'_>] = &[
+            (
+                "hyphenated and plain module keys coexist",
+                r#"
+server:
+  home_dir: "~/.hyphen_test"
+modules:
+  api-gateway:
+    config:
+      bind_addr: "127.0.0.1:9090"
+  plain_module:
+    config:
+      key: "value"
+"#,
+                &["api-gateway", "plain_module"],
+                &[],
+            ),
+            (
+                "only underscored module keys - no normalization needed",
+                r#"
+server:
+  home_dir: "~/.underscore_test"
+modules:
+  my_module:
+    config:
+      setting: 1
+"#,
+                &["my_module"],
+                &["my-module"],
+            ),
+            (
+                "mixed hyphenated keys across modules and logging",
+                r#"
+server:
+  home_dir: "~/.mixed_test"
+modules:
+  auth-resolver:
+    config:
+      vendor: "test"
+logging:
+  auth-resolver:
+    console_level: debug
+"#,
+                &["auth-resolver"],
+                &[],
+            ),
+        ];
+
+        let tmp = tempdir().unwrap();
+        for (label, yaml, expected_keys, absent_keys) in cases {
+            let cfg_path = tmp.path().join(format!("{}.yaml", label.replace(' ', "_")));
+            fs::write(&cfg_path, yaml).unwrap();
+
+            let config = AppConfig::load_layered(&cfg_path).unwrap();
+
+            for key in *expected_keys {
+                assert!(
+                    config.modules.contains_key(*key),
+                    "case '{label}': expected module key '{key}'"
+                );
+            }
+            for key in *absent_keys {
+                assert!(
+                    !config.modules.contains_key(*key),
+                    "case '{label}': module key '{key}' should not exist"
+                );
+            }
+        }
     }
 }
 

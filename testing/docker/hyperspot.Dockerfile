@@ -7,7 +7,7 @@ ARG CARGO_FEATURES
 
 # Install protobuf-compiler for prost-build
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev && \
+    apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev cmake && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -17,7 +17,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY rust-toolchain.toml ./
 
 # Copy all workspace members
-COPY apps/hyperspot-server ./apps/hyperspot-server
+COPY apps ./apps
 COPY apps/gts-docs-validator ./apps/gts-docs-validator
 COPY libs ./libs
 COPY modules ./modules
@@ -37,11 +37,12 @@ RUN if [ -n "$CARGO_FEATURES" ]; then \
 # Stage 2: Runtime - must match builder's base OS
 FROM debian:13.3-slim
 
-WORKDIR /app
+# Install ca-certificates for TLS/SSL root certs (required by oagw module)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*  # Remove apt cache to reduce image size
 
-# e2e-local config uses file-parser.allowed_local_base_dir: data
-# Ensure it exists in container runtime working directory.
-RUN mkdir -p /app/data
+WORKDIR /app
 
 # Copy the built binary from builder stage
 COPY --from=builder /build/target/release/hyperspot-server /app/hyperspot-server
@@ -52,7 +53,7 @@ COPY --from=builder /build/config /app/config
 EXPOSE 8086
 
 # Run with shared e2e-local config (same config path as local E2E).
-RUN useradd -U -u 1000 appuser && \
+RUN useradd -m -U -u 1000 appuser && \
     chown -R 1000:1000 /app
 USER 1000
 CMD ["/app/hyperspot-server", "--config", "/app/config/e2e-local.yaml"]

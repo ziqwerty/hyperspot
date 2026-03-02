@@ -11,6 +11,9 @@ workspace = true
 
 [features]
 default = []
+
+db-mysql = ["modkit-db/mysql", "users-info?/db-mysql"]
+
 users-info-example = ["dep:users-info"]
 oop-example = ["dep:calculator-gateway", "dep:calculator"]
 single-tenant = ["dep:single-tenant-tr-plugin"]
@@ -25,6 +28,7 @@ otel = ["modkit/otel"]
 mimalloc = { version = "0.1" }
 # Local crates
 modkit = { workspace = true, features = ["bootstrap"] }
+modkit-db = { workspace = true }
 
 # System modules
 api_gateway = { package = "cf-api-gateway", path = "../../modules/system/api-gateway" }

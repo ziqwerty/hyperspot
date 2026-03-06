@@ -79,6 +79,14 @@ impl Service {
 
             let sharing = entry.resolve_sharing();
 
+            if entry.owner_id.is_some() && sharing != SharingMode::Private {
+                anyhow::bail!(
+                    "secret '{}': owner_id is only valid for private sharing mode, \
+                     but resolved sharing is {sharing:?}",
+                    entry.key
+                );
+            }
+
             if entry.owner_id.is_none() && sharing == SharingMode::Private {
                 anyhow::bail!(
                     "secret '{}' with sharing mode 'private' requires an explicit owner_id",
@@ -714,6 +722,33 @@ mod tests {
     }
 
     #[test]
+    fn from_config_rejects_owner_id_for_non_private() {
+        for mode in [SharingMode::Tenant, SharingMode::Shared] {
+            let cfg = StaticCredStorePluginConfig {
+                secrets: vec![SecretConfig {
+                    tenant_id: Some(tenant_a()),
+                    owner_id: Some(owner_a()),
+                    key: "bad_key".to_owned(),
+                    value: "val".to_owned(),
+                    sharing: Some(mode),
+                }],
+                ..StaticCredStorePluginConfig::default()
+            };
+
+            match Service::from_config(&cfg) {
+                Ok(_) => panic!("expected error for owner_id with {mode:?} sharing"),
+                Err(e) => {
+                    let err = e.to_string();
+                    assert!(
+                        err.contains("owner_id is only valid for private sharing mode"),
+                        "got: {err}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn from_config_accepts_shared_with_tenant_id() {
         let cfg = StaticCredStorePluginConfig {
             secrets: vec![SecretConfig {
@@ -850,13 +885,14 @@ mod tests {
 
     #[test]
     fn explicit_sharing_overrides_default() {
+        // tenant_id + no owner_id defaults to Tenant; override to Shared.
         let cfg = StaticCredStorePluginConfig {
             secrets: vec![SecretConfig {
                 tenant_id: Some(tenant_a()),
-                owner_id: Some(owner_a()),
+                owner_id: None,
                 key: "k".to_owned(),
                 value: "v".to_owned(),
-                sharing: Some(SharingMode::Tenant),
+                sharing: Some(SharingMode::Shared),
             }],
             ..StaticCredStorePluginConfig::default()
         };
@@ -867,7 +903,7 @@ mod tests {
                 .get(&ctx(tenant_a(), owner_a()), &key)
                 .unwrap()
                 .sharing,
-            SharingMode::Tenant
+            SharingMode::Shared
         );
     }
 

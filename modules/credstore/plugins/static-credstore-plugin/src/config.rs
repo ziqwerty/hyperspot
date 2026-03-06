@@ -45,11 +45,17 @@ pub struct SecretConfig {
     pub tenant_id: Option<Uuid>,
 
     /// Owner (subject) of this secret.
-    /// Requires `tenant_id` to be set.
     ///
-    /// At lookup, matched against `SecurityContext::subject_id()`.
-    /// When `None`, the returned `SecretMetadata::owner_id` is filled
-    /// from `SecurityContext::subject_id()` of the caller.
+    /// **Only valid for `Private` sharing mode.** When set, the secret is
+    /// keyed by `(tenant_id, owner_id, key)` and matched against
+    /// `SecurityContext::subject_id()` at lookup time.
+    ///
+    /// Requires `tenant_id` to be set. Rejected at init if the resolved
+    /// sharing mode is not `Private`.
+    ///
+    /// For `Tenant`/`Shared`/global secrets, `owner_id` must be `None`;
+    /// the returned `SecretMetadata::owner_id` is filled from
+    /// `SecurityContext::subject_id()` of the caller.
     pub owner_id: Option<Uuid>,
 
     /// Secret reference key (validated as `SecretRef` at init).
@@ -150,18 +156,18 @@ secrets:
 
     #[test]
     fn config_explicit_sharing_overrides_default() {
+        // tenant_id + no owner_id defaults to Tenant; override to Shared.
         let yaml = r#"
 secrets:
   - tenant_id: "00000000-0000-0000-0000-000000000001"
-    owner_id: "00000000-0000-0000-0000-000000000002"
     key: "key"
     value: "val"
-    sharing: "tenant"
+    sharing: "shared"
 "#;
 
         let cfg: StaticCredStorePluginConfig = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(cfg.secrets[0].sharing, Some(SharingMode::Tenant));
-        assert_eq!(cfg.secrets[0].resolve_sharing(), SharingMode::Tenant);
+        assert_eq!(cfg.secrets[0].sharing, Some(SharingMode::Shared));
+        assert_eq!(cfg.secrets[0].resolve_sharing(), SharingMode::Shared);
     }
 
     #[test]

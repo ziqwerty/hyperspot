@@ -61,6 +61,13 @@ impl From<DomainError> for Problem {
             )
             .with_trace_id(trace_id.unwrap_or_default()),
 
+            DomainError::ModelNotFound { model_id } => Problem::new(
+                StatusCode::NOT_FOUND,
+                "model_not_found",
+                format!("Model '{model_id}' was not found"),
+            )
+            .with_trace_id(trace_id.unwrap_or_default()),
+
             DomainError::Database { .. } | DomainError::InternalError { .. } => {
                 tracing::error!(error = ?e, "Internal error occurred");
                 Problem::new(

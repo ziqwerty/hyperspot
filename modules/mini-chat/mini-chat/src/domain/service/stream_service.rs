@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use crate::config::StreamingConfig;
 use crate::domain::error::DomainError;
+use crate::domain::models::ResolvedModel;
 use crate::domain::repos::{
     ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository,
-    QuotaUsageRepository, TurnRepository, model_resolver::ResolvedModel,
+    QuotaUsageRepository, TurnRepository,
 };
 use crate::domain::stream_events::{DoneData, ErrorData, StreamEvent};
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
@@ -386,9 +387,12 @@ impl<
         cancel: CancellationToken,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<tokio::task::JoinHandle<StreamOutcome>, StreamError> {
-        let model = resolved_model.model_id;
-        let provider_id = resolved_model.provider_id;
-
+        let ResolvedModel {
+            model_id: model,
+            provider_model_id,
+            provider_id,
+            ..
+        } = resolved_model;
         let tenant_id = ctx.subject_tenant_id();
         let user_id = ctx.subject_id();
 
@@ -450,7 +454,7 @@ impl<
         }
 
         // ── Preflight quota evaluate (external I/O, no DB writes) ──
-        let selected_model = model;
+        let selected_model = model.clone();
         let computed = self
             .quota
             .preflight_evaluate(crate::domain::model::quota::PreflightInput {
@@ -467,107 +471,24 @@ impl<
             .map_err(|e| StreamError::TurnCreationFailed { source: e })?;
 
         let pf = flatten_preflight(computed.decision.clone())?;
-
         // Period boundaries from the computed preflight (used by finalization for settlement)
         let period_starts = computed.periods.clone();
 
         // ── Single transaction: reserve + user message + turn ──
-        let user_msg_id = Uuid::new_v4();
-        let turn_id = Uuid::new_v4();
         let requester_type = ctx.subject_type().unwrap_or("user").to_owned();
-
-        let message_repo = Arc::clone(&self.message_repo);
-        let turn_repo = Arc::clone(&self.turn_repo);
-        let quota_repo = Arc::clone(&self.quota.repo);
-        let content_clone = content.clone();
-        let scope_tx = scope.clone();
-        let effective_model_tx = pf.effective_model.clone();
-        let computed_for_tx = computed;
-
-        self.db
-            .transaction(|tx| {
-                use crate::domain::repos::IncrementReserveParams;
-                Box::pin(async move {
-                    // 1. Write quota reserve
-                    if !computed_for_tx.buckets.is_empty() {
-                        let reserve_scope = AccessScope::for_tenant(computed_for_tx.tenant_id);
-                        for bucket in &computed_for_tx.buckets {
-                            for (period_type, period_start) in &computed_for_tx.periods {
-                                quota_repo
-                                    .increment_reserve(
-                                        tx,
-                                        &reserve_scope,
-                                        IncrementReserveParams {
-                                            tenant_id: computed_for_tx.tenant_id,
-                                            user_id: computed_for_tx.user_id,
-                                            period_type: period_type.clone(),
-                                            period_start: *period_start,
-                                            bucket: bucket.clone(),
-                                            amount_micro: computed_for_tx.reserved_credits_micro,
-                                        },
-                                    )
-                                    .await
-                                    .map_err(|e| {
-                                        modkit_db::DbError::Other(anyhow::Error::new(e))
-                                    })?;
-                            }
-                        }
-                    }
-
-                    // 2. Insert user message
-                    message_repo
-                        .insert_user_message(
-                            tx,
-                            &scope_tx,
-                            InsertUserMessageParams {
-                                id: user_msg_id,
-                                tenant_id,
-                                chat_id,
-                                request_id,
-                                content: content_clone,
-                            },
-                        )
-                        .await
-                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
-
-                    // 3. Create turn
-                    turn_repo
-                        .create_turn(
-                            tx,
-                            &scope_tx,
-                            CreateTurnParams {
-                                id: turn_id,
-                                tenant_id,
-                                chat_id,
-                                request_id,
-                                requester_type,
-                                requester_user_id: Some(user_id),
-                                reserve_tokens: Some(pf.reserve_tokens),
-                                max_output_tokens_applied: Some(pf.max_output_tokens_applied),
-                                reserved_credits_micro: Some(pf.reserved_credits_micro),
-                                policy_version_applied: Some(pf.policy_version_applied),
-                                effective_model: Some(effective_model_tx),
-                                minimal_generation_floor_applied: Some(
-                                    pf.minimal_generation_floor_applied,
-                                ),
-                            },
-                        )
-                        .await
-                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
-
-                    Ok(())
-                })
-            })
-            .await
-            .map_err(|e| StreamError::TurnCreationFailed {
-                source: match e {
-                    modkit_db::DbError::Other(err) => match err.downcast::<DomainError>() {
-                        Ok(domain_err) => domain_err,
-                        Err(err) => DomainError::from(modkit_db::DbError::Other(err)),
-                    },
-                    other => DomainError::from(other),
-                },
-            })?;
+        let turn_id = self
+            .reserve_and_create_turn(
+                &scope,
+                &pf,
+                computed,
+                tenant_id,
+                user_id,
+                chat_id,
+                request_id,
+                requester_type,
+                content.clone(),
+            )
+            .await?;
 
         // Pre-generate assistant message ID (sent in DoneData and used in CAS)
         let message_id = Uuid::new_v4();
@@ -600,9 +521,10 @@ impl<
             }
         })?;
         // Build the full OAGW proxy path: {alias}{api_path} with {model} substituted.
+        // Use provider_model_id (the actual provider-facing model name) for the LLM request.
         let api_path = resolved_provider
             .api_path
-            .replace("{model}", &pf.effective_model);
+            .replace("{model}", &provider_model_id);
         let proxy_path = format!("{}{api_path}", resolved_provider.upstream_alias);
 
         Ok(spawn_provider_task(
@@ -610,12 +532,130 @@ impl<
             proxy_path,
             ctx,
             content,
-            pf.effective_model,
+            model,
+            provider_model_id,
             pf.max_output_tokens_applied.cast_unsigned(),
             cancel,
             tx,
             Some(finalization_ctx),
         ))
+    }
+
+    /// Execute quota reserve, user-message insert, and turn creation in a
+    /// single DB transaction. Returns the generated `turn_id`.
+    #[allow(clippy::too_many_arguments)]
+    async fn reserve_and_create_turn(
+        &self,
+        scope: &AccessScope,
+        pf: &PreflightResult,
+        computed: super::quota_service::PreflightComputed,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        chat_id: Uuid,
+        request_id: Uuid,
+        requester_type: String,
+        content: String,
+    ) -> Result<Uuid, StreamError> {
+        let user_msg_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+
+        let message_repo = Arc::clone(&self.message_repo);
+        let turn_repo = Arc::clone(&self.turn_repo);
+        let quota_repo = Arc::clone(&self.quota.repo);
+        let scope_tx = scope.clone();
+        let effective_model_tx = pf.effective_model.clone();
+        let reserve_tokens = pf.reserve_tokens;
+        let max_output_tokens_applied = pf.max_output_tokens_applied;
+        let reserved_credits_micro = pf.reserved_credits_micro;
+        let policy_version_applied = pf.policy_version_applied;
+        let minimal_generation_floor_applied = pf.minimal_generation_floor_applied;
+
+        self.db
+            .transaction(|tx| {
+                use crate::domain::repos::IncrementReserveParams;
+                Box::pin(async move {
+                    // 1. Write quota reserve
+                    if !computed.buckets.is_empty() {
+                        let reserve_scope = AccessScope::for_tenant(computed.tenant_id);
+                        for bucket in &computed.buckets {
+                            for (period_type, period_start) in &computed.periods {
+                                quota_repo
+                                    .increment_reserve(
+                                        tx,
+                                        &reserve_scope,
+                                        IncrementReserveParams {
+                                            tenant_id: computed.tenant_id,
+                                            user_id: computed.user_id,
+                                            period_type: period_type.clone(),
+                                            period_start: *period_start,
+                                            bucket: bucket.clone(),
+                                            amount_micro: computed.reserved_credits_micro,
+                                        },
+                                    )
+                                    .await
+                                    .map_err(|e| {
+                                        modkit_db::DbError::Other(anyhow::Error::new(e))
+                                    })?;
+                            }
+                        }
+                    }
+
+                    // 2. Insert user message
+                    message_repo
+                        .insert_user_message(
+                            tx,
+                            &scope_tx,
+                            InsertUserMessageParams {
+                                id: user_msg_id,
+                                tenant_id,
+                                chat_id,
+                                request_id,
+                                content,
+                            },
+                        )
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+
+                    // 3. Create turn
+                    turn_repo
+                        .create_turn(
+                            tx,
+                            &scope_tx,
+                            CreateTurnParams {
+                                id: turn_id,
+                                tenant_id,
+                                chat_id,
+                                request_id,
+                                requester_type,
+                                requester_user_id: Some(user_id),
+                                reserve_tokens: Some(reserve_tokens),
+                                max_output_tokens_applied: Some(max_output_tokens_applied),
+                                reserved_credits_micro: Some(reserved_credits_micro),
+                                policy_version_applied: Some(policy_version_applied),
+                                effective_model: Some(effective_model_tx),
+                                minimal_generation_floor_applied: Some(
+                                    minimal_generation_floor_applied,
+                                ),
+                            },
+                        )
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|e| StreamError::TurnCreationFailed {
+                source: match e {
+                    modkit_db::DbError::Other(err) => match err.downcast::<DomainError>() {
+                        Ok(domain_err) => domain_err,
+                        Err(err) => DomainError::from(modkit_db::DbError::Other(err)),
+                    },
+                    other => DomainError::from(other),
+                },
+            })?;
+
+        Ok(turn_id)
     }
 }
 
@@ -640,6 +680,7 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
     ctx: SecurityContext,
     content: String,
     model: String,
+    provider_model_id: String,
     max_output_tokens: u32,
     cancel: CancellationToken,
     tx: mpsc::Sender<StreamEvent>,
@@ -650,8 +691,8 @@ fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'st
         let mut first_token_time: Option<std::time::Duration> = None;
         let msg_id_str = fin_ctx.as_ref().map(|p| p.message_id.to_string());
 
-        // Build the LLM request
-        let request = LlmRequestBuilder::new(&model)
+        // Build the LLM request using provider_model_id (the actual provider-facing name)
+        let request = LlmRequestBuilder::new(&provider_model_id)
             .message(LlmMessage::user(&content))
             .max_output_tokens(u64::from(max_output_tokens))
             .build_streaming();
@@ -1248,6 +1289,7 @@ mod tests {
             mock_ctx(),
             "hi".into(),
             "test-model".into(),
+            "test-model".into(),
             4096,
             cancel,
             tx,
@@ -1292,6 +1334,7 @@ mod tests {
             "test-alias".to_owned(),
             mock_ctx(),
             "hi".into(),
+            "test-model".into(),
             "test-model".into(),
             4096,
             cancel,
@@ -1370,6 +1413,7 @@ mod tests {
             "test-alias".to_owned(),
             mock_ctx(),
             "hi".into(),
+            "test-model".into(),
             "test-model".into(),
             4096,
             cancel.clone(),
@@ -1453,6 +1497,7 @@ mod tests {
                     policy_version: 1,
                     model_catalog: vec![mini_chat_sdk::ModelCatalogEntry {
                         model_id: "gpt-5.2".to_owned(),
+                        provider_model_id: "azure-gpt-5.2-2025-03".to_owned(),
                         display_name: "GPT 5.2".to_owned(),
                         tier: mini_chat_sdk::ModelTier::Standard,
                         global_enabled: true,
@@ -1529,6 +1574,20 @@ mod tests {
             .expect("insert chat");
     }
 
+    fn test_resolved_model() -> ResolvedModel {
+        ResolvedModel {
+            model_id: "gpt-5.2".into(),
+            provider_model_id: "azure-gpt-5.2-2025-03".into(),
+            provider_id: "openai".into(),
+            display_name: "GPT 5.2".into(),
+            tier: "standard".into(),
+            multiplier_display: "1x".into(),
+            description: None,
+            multimodal_capabilities: vec![],
+            context_window: 128_000,
+        }
+    }
+
     /// 7.6: Idempotency check — returns Replay when a completed turn exists.
     #[tokio::test]
     async fn prestream_idempotency_returns_replay_for_existing_turn() {
@@ -1595,10 +1654,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -1660,10 +1716,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -1742,10 +1795,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -1824,10 +1874,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -1891,10 +1938,7 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -1929,10 +1973,7 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -1983,10 +2024,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel1,
                 tx1,
             )
@@ -2011,10 +2049,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello again".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel2,
                 tx2,
             )
@@ -2097,10 +2132,7 @@ mod tests {
                 chat_id,
                 request_id,
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel.clone(),
                 tx,
             )
@@ -2165,10 +2197,7 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -2293,6 +2322,7 @@ mod tests {
             mock_ctx(),
             "hi".into(),
             "gpt-4o-mini".into(), // effective_model passed as the model param
+            "gpt-4o-mini".into(),
             4096,
             cancel,
             tx,
@@ -2341,6 +2371,7 @@ mod tests {
     ) -> mini_chat_sdk::ModelCatalogEntry {
         mini_chat_sdk::ModelCatalogEntry {
             model_id: id.to_owned(),
+            provider_model_id: format!("provider-{id}"),
             display_name: id.to_owned(),
             tier,
             global_enabled: true,
@@ -2477,10 +2508,7 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -2572,10 +2600,7 @@ mod tests {
                 chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )
@@ -2636,7 +2661,14 @@ mod tests {
                 "hello".into(),
                 ResolvedModel {
                     model_id: "gpt-5".into(),
+                    provider_model_id: "azure-gpt-5-2025-03".into(),
                     provider_id: "openai".into(),
+                    display_name: "GPT 5".into(),
+                    tier: "premium".into(),
+                    multiplier_display: "2x".into(),
+                    description: None,
+                    multimodal_capabilities: vec![],
+                    context_window: 128_000,
                 },
                 cancel,
                 tx,
@@ -2699,10 +2731,7 @@ mod tests {
                 bogus_chat_id,
                 Uuid::new_v4(),
                 "hello".into(),
-                ResolvedModel {
-                    model_id: "gpt-5.2".into(),
-                    provider_id: "openai".into(),
-                },
+                test_resolved_model(),
                 cancel,
                 tx,
             )

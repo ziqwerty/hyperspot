@@ -152,6 +152,7 @@ modules:
       priority: 100
       model_catalog:
         - model_id: "gpt-5.2"
+          provider_model_id: "gpt-5.2"
           display_name: "GPT-5.2"
           tier: Premium
           global_enabled: true
@@ -166,6 +167,7 @@ modules:
           multiplier_display: "3x"
           provider_id: "openai"
         - model_id: "gpt-5-mini"
+          provider_model_id: "gpt-5-mini"
           display_name: "GPT-5 Mini"
           tier: Standard
           global_enabled: true
@@ -180,6 +182,7 @@ modules:
           multiplier_display: "1x"
           provider_id: "openai"
         - model_id: "gpt-5-nano"
+          provider_model_id: "gpt-5-nano"
           display_name: "GPT-5 Nano"
           tier: Standard
           global_enabled: true

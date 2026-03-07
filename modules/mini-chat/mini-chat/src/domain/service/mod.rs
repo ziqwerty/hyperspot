@@ -7,9 +7,9 @@ use modkit_macros::domain_model;
 
 use crate::config::{EstimationBudgets, QuotaConfig, StreamingConfig};
 use crate::domain::repos::{
-    AttachmentRepository, ChatRepository, MessageRepository, ModelPrefRepository, ModelResolver,
-    PolicySnapshotProvider, QuotaUsageRepository, ReactionRepository, ThreadSummaryRepository,
-    TurnRepository, UserLimitsProvider, VectorStoreRepository,
+    AttachmentRepository, ChatRepository, MessageRepository, ModelResolver, PolicySnapshotProvider,
+    QuotaUsageRepository, ReactionRepository, ThreadSummaryRepository, TurnRepository,
+    UserLimitsProvider, VectorStoreRepository,
 };
 use crate::domain::service::quota_settler::QuotaSettler;
 use crate::infra::llm::provider_resolver::ProviderResolver;
@@ -58,6 +58,11 @@ pub(crate) mod resources {
             pep_properties::RESOURCE_ID,
         ],
     };
+
+    pub const MODEL: ResourceType = ResourceType {
+        name: "gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1",
+        supported_properties: &[],
+    };
 }
 
 #[allow(dead_code)]
@@ -94,7 +99,6 @@ pub(crate) struct Repositories<
     pub(crate) quota: Arc<QR>,
     pub(crate) turn: Arc<TR>,
     pub(crate) reaction: Arc<RR>,
-    pub(crate) model_pref: Arc<dyn ModelPrefRepository>,
     pub(crate) thread_summary: Arc<dyn ThreadSummaryRepository>,
     pub(crate) vector_store: Arc<dyn VectorStoreRepository>,
 }
@@ -205,12 +209,7 @@ impl<
                 Arc::clone(&repos.vector_store),
                 enforcer.clone(),
             ),
-            models: ModelService::new(
-                Arc::clone(&db),
-                Arc::clone(&repos.model_pref),
-                enforcer,
-                Arc::clone(model_resolver),
-            ),
+            models: ModelService::new(Arc::clone(&db), enforcer, Arc::clone(model_resolver)),
             quota: Arc::clone(&quota_svc),
             finalization,
             db,

@@ -819,6 +819,7 @@ mod tests {
     fn make_model(id: &str, tier: ModelTier, enabled: bool, is_default: bool) -> ModelCatalogEntry {
         ModelCatalogEntry {
             model_id: id.to_owned(),
+            provider_model_id: format!("provider-{id}"),
             display_name: id.to_owned(),
             tier,
             global_enabled: enabled,

@@ -23,7 +23,6 @@ pub(crate) type AppServices = GenericAppServices<
 use crate::infra::db::repo::attachment_repo::AttachmentRepository;
 use crate::infra::db::repo::chat_repo::ChatRepository;
 use crate::infra::db::repo::message_repo::MessageRepository;
-use crate::infra::db::repo::model_pref_repo::ModelPrefRepository;
 use crate::infra::db::repo::quota_usage_repo::QuotaUsageRepository;
 use crate::infra::db::repo::reaction_repo::ReactionRepository;
 use crate::infra::db::repo::thread_summary_repo::ThreadSummaryRepository;
@@ -138,7 +137,6 @@ impl Module for MiniChatModule {
             quota: Arc::new(QuotaUsageRepository),
             turn: Arc::new(TurnRepository),
             reaction: Arc::new(ReactionRepository),
-            model_pref: Arc::new(ModelPrefRepository),
             thread_summary: Arc::new(ThreadSummaryRepository),
             vector_store: Arc::new(VectorStoreRepository),
         };

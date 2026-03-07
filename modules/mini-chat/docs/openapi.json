@@ -1863,8 +1863,8 @@
       },
       "Model": {
         "type": "object",
-        "required": ["model_id", "display_name", "provider", "tier", "multiplier_display", "multimodal_capabilities", "context_window"],
-        "description": "A model visible to the current user. Does NOT expose provider deployment IDs, credit multipliers, policy_version, max_output, or is_default.",
+        "required": ["model_id", "display_name", "tier", "multiplier_display", "multimodal_capabilities", "context_window"],
+        "description": "A model visible to the current user. Does NOT expose provider, provider deployment IDs, credit multipliers, policy_version, max_output, or is_default.",
         "properties": {
           "model_id": {
             "type": "string",
@@ -1873,10 +1873,6 @@
           "display_name": {
             "type": "string",
             "description": "User-facing name for the model selector UI."
-          },
-          "provider": {
-            "type": "string",
-            "description": "User-facing display name of the provider (e.g., \"OpenAI\", \"Azure OpenAI\"). MUST NOT be a deployment handle, routing identifier, or internal provider key."
           },
           "tier": {
             "type": "string",

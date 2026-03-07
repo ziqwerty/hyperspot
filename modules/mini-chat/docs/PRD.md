@@ -458,7 +458,7 @@ When a chat is deleted, the system MUST mark attachments for asynchronous cleanu
 **P1 scope**:
 
 - Mini Chat enforces credit-based quotas (daily, monthly) and performs downgrade: premium → standard → reject (`quota_exceeded`).
-- Integration is asynchronous: Mini Chat enqueues a usage event in a transactional outbox after each turn reaches a terminal state. A background dispatcher publishes it via the selected `minichat-policy-plugin` plugin (`publish_usage(payload)`). CyberChatManager consumes these events and updates credit balances.
+- Integration is asynchronous: Mini Chat enqueues a usage event in a transactional outbox after each turn reaches a terminal state. A background dispatcher publishes it via the selected `mini-chat-model-policy-plugin` plugin (`publish_usage(payload)`). CyberChatManager consumes these events and updates credit balances.
 - Usage events MUST be idempotent (keyed by `turn_id` / `request_id`).
 - No synchronous billing RPC is required during message execution.
 - All LLM invocations that take a quota reserve produce exactly one terminal billing event (completed, failed, or aborted), ensuring no credit drift under disconnect or crash scenarios. Pre-reserve failures (validation, authorization, quota preflight rejection) are not part of reserve settlement and do not require a billing event.

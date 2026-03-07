@@ -37,7 +37,7 @@ Long conversations are managed via thread summaries - a Level 1 compression stra
 | `cpt-cf-mini-chat-fr-ux-recovery` | `p1` | See **Streaming Contract** (Idempotency + reconnect rule) and **Turn Status API** |
 | `cpt-cf-mini-chat-fr-turn-mutations` | `p1` | Retry / edit / delete last turn via Turn Mutation API; see **Turn Mutation Rules (P1)** and turn mutation endpoints |
 | `cpt-cf-mini-chat-fr-model-selection` | `p1` | User selects model per chat at creation; model locked for conversation lifetime; see constraint `cpt-cf-mini-chat-constraint-model-locked-per-chat` and Model Catalog Configuration |
-| `cpt-cf-mini-chat-fr-models-api` | `p1` | Public read-only Models API (`GET /v1/models`, `GET /v1/models/{model_id}`). Returns only models visible to the authenticated user (globally enabled AND user-enabled). Per-user model enable/disable via `user_model_prefs`. Catalog sourced from `minichat-policy-plugin`. See Models API (section 3.3). |
+| `cpt-cf-mini-chat-fr-models-api` | `p1` | Public read-only Models API (`GET /v1/models`, `GET /v1/models/{model_id}`). Returns only models visible to the authenticated user (globally enabled). Catalog sourced from `mini-chat-model-policy-plugin`. See Models API (section 3.3). |
 | `cpt-cf-mini-chat-fr-message-reactions` | `p1` | Binary like/dislike on assistant messages; see `message_reactions` table |
 | `cpt-cf-mini-chat-fr-group-chats` | `p2+` | Deferred — see `cpt-cf-mini-chat-adr-group-chat-usage-attribution` |
 
@@ -1045,7 +1045,7 @@ For streaming endpoints, failures before any streaming begins MUST be returned a
 | `too_many_images` | 400 | Request includes more than the configured maximum images for a single turn |
 | `image_bytes_exceeded` | 413 | Request includes images whose total configured per-turn byte limit is exceeded |
 | `unsupported_media` | 415 | Request includes image input but the effective model does not support multimodal input. Defensive under P1 catalog invariant (all enabled models include `VISION_INPUT`); expected only on catalog misconfiguration or future non-vision models. |
-| `model_not_found` | 404 | Model does not exist in the catalog or is not visible to the user (globally disabled or user-disabled). Used by `GET /v1/models/{model_id}`. |
+| `model_not_found` | 404 | Model does not exist in the catalog or is globally disabled. Used by `GET /v1/models/{model_id}`. |
 | `provider_error` | 502 | LLM provider returned an error |
 | `provider_timeout` | 504 | LLM provider request timed out |
 | `web_search_calls_exceeded` | — (SSE only) | Per-message web search tool call limit exceeded mid-turn. Emitted as terminal `event: error` payload only; no HTTP error status is used because the stream is already open. The turn is finalized as `failed` with `settlement_method="actual"\|"estimated"`. |
@@ -1060,13 +1060,13 @@ For streaming endpoints, failures before any streaming begins MUST be returned a
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-interface-models-api`
 
-Read-only endpoints for the model catalog visible to the authenticated user. The canonical model catalog is provided by `minichat-policy-plugin` (section 5.2); Mini Chat caches it in memory and merges per-user preferences stored in `user_model_prefs` (section 3.7) to compute visibility.
+Read-only endpoints for the model catalog visible to the authenticated user. The canonical model catalog is provided by `mini-chat-model-policy-plugin` (section 5.2); Mini Chat caches it in memory and filters by `global_enabled` to compute visibility.
 
 ##### List Models
 
 **Endpoint**: `GET /v1/models`
 
-Returns all models that are (a) globally enabled in the policy catalog AND (b) user-enabled for this user (allow-by-default semantics — see Visibility Algorithm below).
+Returns all models that are globally enabled in the policy catalog (see Visibility Algorithm below).
 
 **Response** (success): `200 OK`
 ```json
@@ -1075,7 +1075,6 @@ Returns all models that are (a) globally enabled in the policy catalog AND (b) u
     {
       "model_id": "gpt-5.2",
       "display_name": "GPT-5.2",
-      "provider": "OpenAI",
       "tier": "premium",
       "multiplier_display": "1x",
       "description": "Best for complex reasoning tasks",
@@ -1090,9 +1089,8 @@ Response fields per item:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model_id` | string | Stable internal model identifier (e.g., `"gpt-5.2"`). Same value used in `POST /v1/chats` and `chats.model`. |
+| `model_id` | string | Stable internal model identifier (e.g., a UUID or any opaque string). Same value used in `POST /v1/chats` and `chats.model`. Format is not prescribed — may be a UUID, slug, or any unique string. |
 | `display_name` | string | User-facing name for the model selector UI. |
-| `provider` | string | User-facing display name of the provider (e.g., `"OpenAI"`, `"Azure OpenAI"`). MUST NOT be a deployment handle, routing identifier, or internal provider key. |
 | `tier` | `"standard"` \| `"premium"` | Rate-limit tier. |
 | `multiplier_display` | string | Human-readable credit multiplier (e.g., `"1x"`, `"2x"`). Informational only — MUST NOT expose `credits_micro` or numeric multiplier internals. |
 | `description` | string (optional) | User-facing help text. May be absent if no description is configured for the model. |
@@ -1105,7 +1103,7 @@ Standard errors: `401` (unauthenticated), `403` (license / permissions).
 
 **Endpoint**: `GET /v1/models/{model_id}`
 
-Returns the same model projection as the list endpoint, but for a single model. The model MUST pass the same visibility rule (globally enabled AND user-enabled). If the model is globally disabled, user-disabled, or does not exist, the server MUST return `404` with error code `model_not_found` to avoid leaking catalog details.
+Returns the same model projection as the list endpoint, but for a single model. The model MUST pass the same visibility rule (globally enabled). If the model is globally disabled or does not exist, the server MUST return `404` with error code `model_not_found` to avoid leaking catalog details.
 
 **Response** (success): `200 OK` — single model object (same shape as an item in the list response).
 
@@ -1113,24 +1111,19 @@ Standard errors: `401` (unauthenticated), `403` (license / permissions), `404` (
 
 ##### Visibility Algorithm (Normative)
 
-The domain service computes model visibility for `(tenant_id, user_id)` as follows:
+The domain service computes model visibility as follows:
 
-1. Read the cached policy catalog (source: `minichat-policy-plugin`).
+1. Read the cached policy catalog (source: `mini-chat-model-policy-plugin`).
 2. Filter to models where `global_enabled = true`.
-3. Load all `user_model_prefs` rows for this `(tenant_id, user_id)` in a single query.
-4. For each globally enabled model:
-   - If a `user_model_prefs` row exists with `is_enabled = false` → **exclude**.
-   - Otherwise (no row, or row with `is_enabled = true`) → **include** (allow-by-default).
-5. `GET /v1/models` returns all included models.
-6. `GET /v1/models/{model_id}` applies the same rule; returns `404` if excluded or not in the catalog.
+3. `GET /v1/models` returns all globally enabled models.
+4. `GET /v1/models/{model_id}` applies the same rule; returns `404` if disabled or not in the catalog.
 
-**Invariant**: disabled models (globally or per-user) MUST NOT appear in `GET /v1/models` and MUST NOT be retrievable via `GET /v1/models/{model_id}`.
+**Invariant**: globally disabled models MUST NOT appear in `GET /v1/models` and MUST NOT be retrievable via `GET /v1/models/{model_id}`.
 
 ##### Non-Exposure Rules (Models API)
 
-- Response MUST NOT include: provider deployment IDs, routing metadata, credit multipliers (`input_tokens_credit_multiplier`, `output_tokens_credit_multiplier`, `credits_micro`), `policy_version`, `max_output`, or `is_default`.
-- `provider` MUST be the user-facing display name (e.g., `"OpenAI"`, `"Azure OpenAI"`), not a deployment handle, OAGW routing identifier, or internal provider key.
-- `model_id` is the stable internal identifier used by the API (e.g., `"gpt-5.2"`), never a provider deployment handle.
+- Response MUST NOT include: `provider`, `provider_model_id`, provider deployment IDs, routing metadata, credit multipliers (`input_tokens_credit_multiplier`, `output_tokens_credit_multiplier`, `credits_micro`), `policy_version`, `max_output`, or `is_default`.
+- `model_id` is the stable internal identifier used by the API (e.g., a UUID or opaque slug), never a provider model name or deployment handle.
 
 #### Message Reaction API
 
@@ -1560,7 +1553,7 @@ sequenceDiagram
 | id | UUID | Chat identifier |
 | tenant_id | UUID | Owning tenant |
 | user_id | UUID | Owning user |
-| model | VARCHAR(64) | **selected_model**: model chosen at chat creation, immutable for the chat lifetime. Must reference a valid entry in the model catalog. Resolved via the `is_default` premium model algorithm if not specified at creation (see Model Catalog Configuration). |
+| model | TEXT | **selected_model**: model chosen at chat creation, immutable for the chat lifetime. Must reference a valid entry in the model catalog. Resolved via the `is_default` premium model algorithm if not specified at creation (see Model Catalog Configuration). |
 | title | VARCHAR(255) | Chat title (user-set or auto-generated) |
 | is_temporary | BOOLEAN | If true, auto-deleted after 24h (P2; default false at P1) |
 | created_at | TIMESTAMPTZ | Creation time |
@@ -1593,7 +1586,7 @@ sequenceDiagram
 | features_used | JSONB | Feature flags and counters (nullable) |
 | input_tokens | BIGINT | Actual input tokens for assistant messages (nullable) |
 | output_tokens | BIGINT | Actual output tokens for assistant messages (nullable) |
-| model | VARCHAR(64) | **effective_model**: actual model used for this turn after quota/policy evaluation (nullable; set for assistant messages). May differ from `chats.model` (selected_model) when a downgrade occurred. Derived from `chat_turns.effective_model`. |
+| model | TEXT | **effective_model**: actual model used for this turn after quota/policy evaluation (nullable; set for assistant messages). May differ from `chats.model` (selected_model) when a downgrade occurred. Derived from `chat_turns.effective_model`. |
 | is_compressed | BOOLEAN | True if included in a thread summary |
 | created_at | TIMESTAMPTZ | Creation time |
 | deleted_at | TIMESTAMPTZ | Soft-delete timestamp (nullable). List queries exclude deleted rows. |
@@ -1628,7 +1621,7 @@ Tracks idempotency and in-progress generation state for `request_id`. This avoid
 | max_output_tokens_applied | INTEGER | The `max_output_tokens` value used at preflight for this turn. Persisted at preflight (same time as `reserve_tokens`). Nullable — NULL only for pre-reserve failures. Immutable after insert. Required for deterministic derivation of `estimated_input_tokens` at settlement time: `estimated_input_tokens = reserve_tokens - max_output_tokens_applied` (sections 5.8, 5.9). |
 | reserved_credits_micro | BIGINT | Worst-case credit reserve computed at preflight: `credits_micro(estimated_input_tokens, max_output_tokens_applied, in_mult, out_mult)` where `estimated_input_tokens = reserve_tokens - max_output_tokens_applied` (section 5.4.1), using multipliers from the policy snapshot identified by `policy_version_applied`. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. Used for reserve release/reconciliation at settlement (section 5.4.4). |
 | policy_version_applied | BIGINT | Monotonic version of the policy snapshot (section 5.2.1) used for this turn's preflight reserve, tier selection, and settlement. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. Required for deterministic credit computation at settlement and for CCM billing reconciliation. |
-| effective_model | VARCHAR(64) | Model resolved at preflight after quota downgrade cascade. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. **Single source of truth** for the model used in this turn. Also recorded on `messages.model` for the assistant message. |
+| effective_model | TEXT | Model resolved at preflight after quota downgrade cascade. Persisted at preflight. Nullable — NULL only for pre-reserve failures. Immutable after insert. **Single source of truth** for the model used in this turn. Also recorded on `messages.model` for the assistant message. |
 | minimal_generation_floor_applied | INTEGER | The `minimal_generation_floor` value from MiniChat config (NOT from CCM policy snapshot) captured at preflight. Persisted at preflight (same time as `reserve_tokens` and `policy_version_applied`). Nullable — NULL only for pre-reserve failures. Immutable after insert. Required for deterministic estimated settlement (sections 5.8, 5.9) when provider-reported usage is unavailable (aborted/failed/orphan outcomes). This is the ONLY estimation budget parameter that influences settlement; all other estimation budgets (bytes_per_token_conservative, safety_margin_pct, etc.) are preflight-only and MUST NOT affect settlement. |
 | error_detail | TEXT | Non-sensitive diagnostic information for failed turns (nullable). Not exposed in public API. |
 | deleted_at | TIMESTAMPTZ | Soft-delete timestamp for turn mutations (nullable). Set when a turn is replaced by retry or edit, or explicitly deleted. |
@@ -1686,7 +1679,7 @@ Soft-delete rules:
 | img_thumbnail | BYTEA | Server-generated preview thumbnail raw bytes (nullable; always NULL for `attachment_kind=document`). Stored as WebP. Maximum decoded size: `thumbnail_max_bytes` (default 131072 / 128 KiB). Stored only in this database; never uploaded to provider. |
 | img_thumbnail_width | INTEGER | Thumbnail width in pixels (nullable) |
 | img_thumbnail_height | INTEGER | Thumbnail height in pixels (nullable) |
-| summary_model | VARCHAR(64) | Model used to generate the summary (nullable) |
+| summary_model | TEXT | Model used to generate the summary (nullable) |
 | summary_updated_at | TIMESTAMPTZ | When the summary was last generated (nullable) |
 | cleanup_status | VARCHAR(16) | `pending`, `in_progress`, `done`, `failed` (nullable) |
 | cleanup_attempts | INTEGER | Cleanup retry attempts (default 0) |
@@ -1941,33 +1934,6 @@ Alternative naming (NOT in P1):
 
 **Secure ORM**: No independent `#[secure]` — accessed through parent chat. The reaction endpoints require the message's parent chat to be loaded via a scoped query first (same pattern as messages, attachments, and chat_turns).
 
-#### Table: user_model_prefs
-
-- [ ] `p1` - **ID**: `cpt-cf-mini-chat-dbtable-user-model-prefs`
-
-Per-user model enable/disable preferences. Used by the Models API visibility algorithm (section 3.3) to filter the policy catalog per user.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| tenant_id | UUID | Owning tenant |
-| user_id | UUID | Owning user |
-| model_id | VARCHAR(64) | References a `model_id` in the policy catalog |
-| is_enabled | BOOLEAN | `false` hides the model from this user. Default semantics: if no row exists, the model is considered enabled (allow-by-default). |
-| overrides | JSONB | Reserved for P2+ per-user model overrides (e.g., custom system prompts, temperature). MUST default to `'{}'` and MUST NOT affect billing, capability enforcement, or quota in P1. |
-| updated_at | TIMESTAMPTZ | Last update time |
-
-**PK**: `(tenant_id, user_id, model_id)` (composite primary key — no surrogate `id` column needed).
-
-**Constraints**: NOT NULL on `tenant_id`, `user_id`, `model_id`, `is_enabled`, `overrides`, `updated_at`.
-
-**Indexes**: `(tenant_id, user_id)` for loading all preferences for a user in one query (used by the visibility algorithm).
-
-**Secure ORM**: `#[secure(tenant_col = "tenant_id", owner_col = "user_id", no_type)]`
-
-**Allow-by-default semantics (P1)**: if no row exists for `(tenant_id, user_id, model_id)`, the model is treated as enabled. A row is only written when a user explicitly disables (or re-enables) a model. This keeps the table sparse and avoids a migration step when new models are added to the catalog.
-
-**P2+ extensibility**: the `overrides` JSONB column is reserved for future per-user model configuration (e.g., custom system prompts, preferred temperature). In P1, this column MUST be ignored by all enforcement and billing paths. No schema migration will be needed to start using it.
-
 #### Projection Table: tenant_closure
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-dbtable-tenant-closure-ref`
@@ -1999,9 +1965,19 @@ The authorized resource is **Chat**. Sub-resources (Message, Attachment, ThreadS
 
 | Attribute | Value                              |
 |-----------|------------------------------------|
-| GTS Type ID | `gts.cf.mini_chat._.chat.v1~`      |
+| GTS Type ID | `gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1`      |
 | Primary table | `chats`                            |
 | Authorization granularity | Chat-level (sub-resources inherit) |
+
+##### Model Resource Type
+
+The authorized resource for the Models API is **Model**. This is a read-only, catalog-sourced resource — it has no database table and no tenant/user scoping columns. Authorization is a pure permission check (`require_constraints=false`).
+
+| Attribute | Value |
+|-----------|-------|
+| GTS Type ID | `gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1` |
+| Primary table | — (sourced from policy catalog) |
+| Authorization granularity | Permission-only (no constraint scoping) |
 
 #### PEP Configuration
 
@@ -2041,12 +2017,15 @@ The authorized resource is **Chat**. Sub-resources (Message, Attachment, ThreadS
 | `DELETE /v1/chats/{id}/turns/{request_id}` | `delete_turn` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `PUT /v1/chats/{id}/messages/{msg_id}/reaction` | `set_reaction` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
 | `DELETE /v1/chats/{id}/messages/{msg_id}/reaction` | `delete_reaction` | present (chat_id) | `true` | `eq(owner_tenant_id)` + `eq(user_id)` |
+| `GET /v1/models` | `list` | absent | `false` | decision only (no constraints) |
+| `GET /v1/models/{model_id}` | `read` | absent | `false` | decision only (no constraints) |
 
 **Notes**:
 - `list_messages`, `send_message`, `upload_attachment`, `read_attachment`, `retry_turn`, `edit_turn`, `delete_turn`, `set_reaction`, and `delete_reaction` are actions on the Chat resource, not on Message or Turn sub-resources. The `resource.id` is the chat's ID.
 - For streaming (`send_message`, `retry_turn`, `edit_turn`), authorization is evaluated once at SSE connection establishment. The entire streaming session operates under the initial authorization decision. No per-message re-authorization.
 - For `create`, the PEP passes `resource.properties.owner_tenant_id` and `resource.properties.user_id` from the SecurityContext. The PDP validates permission without returning constraints.
 - Turn mutation endpoints (`retry_turn`, `edit_turn`, `delete_turn`) additionally enforce latest-turn and terminal-state checks in the domain service after authorization succeeds (see section 3.9).
+- Model endpoints (`GET /v1/models`, `GET /v1/models/{model_id}`) use the `gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1` resource type. All other endpoints above use the Chat resource type.
 
 #### Evaluation Request/Response Examples
 
@@ -2061,7 +2040,7 @@ PEP -> PDP Request:
     "properties": { "tenant_id": "tenant-xyz-789" }
   },
   "action": { "name": "list" },
-  "resource": { "type": "gts.cf.mini_chat._.chat.v1~" },
+  "resource": { "type": "gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1" },
   "context": {
     "tenant_context": {
       "mode": "root_only",
@@ -2121,7 +2100,7 @@ PEP -> PDP Request:
   },
   "action": { "name": "read" },
   "resource": {
-    "type": "gts.cf.mini_chat._.chat.v1~",
+    "type": "gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1",
     "id": "chat-456"
   },
   "context": {
@@ -2185,7 +2164,7 @@ PEP -> PDP Request:
   },
   "action": { "name": "create" },
   "resource": {
-    "type": "gts.cf.mini_chat._.chat.v1~",
+    "type": "gts.cf.core.ai_chat.chat.v1~cf.core.mini_chat.chat.v1",
     "properties": {
       "owner_tenant_id": "tenant-xyz-789",
       "user_id": "user-abc-123"
@@ -2362,7 +2341,7 @@ These events are emitted to platform `audit_service` following the same emission
 - Quota enforcement: daily + monthly per user; credit-based rate limits per tier tracked in real-time; credits are computed from provider-reported token usage using model credit multipliers; premium models have stricter limits, standard models have separate, higher limits; when all tiers are exhausted, reject with `quota_exceeded`; image counters enforced separately
 - File Search per-message call limit is configurable per deployment (default: 2 tool calls per message)
 - Web search via provider tooling (Azure Foundry), explicitly enabled per request via `web_search.enabled` parameter; per-message call limit (default: 2) and per-user daily quota (default: 75); global `disable_web_search` kill switch
-- Public Models API (`GET /v1/models`, `GET /v1/models/{model_id}`): read-only; returns only models visible to the authenticated user (globally enabled in the policy catalog AND user-enabled). Per-user model enable/disable via `user_model_prefs` table (allow-by-default semantics). Catalog sourced from `minichat-policy-plugin`.
+- Public Models API (`GET /v1/models`, `GET /v1/models/{model_id}`): read-only; returns only globally enabled models from the policy catalog. Catalog sourced from `mini-chat-model-policy-plugin`.
 
 **Deferred to P2+**:
 - Temporary chats with 24h scheduled cleanup
@@ -2373,7 +2352,6 @@ These events are emitted to platform `audit_service` following the same emission
 - Per-workspace vector store aggregation
 - Full conversation history editing (editing/deleting arbitrary historical messages)
 - Thread branching or multi-version conversations
-- Per-user model overrides via `user_model_prefs.overrides` JSONB column (reserved in P1; enforcement deferred)
 
 ### Data Classification and Retention (P1)
 
@@ -2661,15 +2639,16 @@ The file search per-message call limit (`max_calls_per_message`, default: 2) is 
 
 - [ ] `p1` - **ID**: `cpt-cf-mini-chat-design-model-catalog`
 
-The canonical model catalog is provided by `minichat-policy-plugin` (section 5.2) as part of the policy snapshot. Mini Chat fetches the catalog at startup and caches it in memory. The catalog is refreshed via the existing policy snapshot delivery mechanism (section 5.2.3: CCM push-notify + pull, with a periodic reconciliation fallback). No new subsystem or refresh mechanism is introduced.
+The canonical model catalog is provided by `mini-chat-model-policy-plugin` (section 5.2) as part of the policy snapshot. Mini Chat fetches the catalog at startup and caches it in memory. The catalog is refreshed via the existing policy snapshot delivery mechanism (section 5.2.3: CCM push-notify + pull, with a periodic reconciliation fallback). No new subsystem or refresh mechanism is introduced.
 
 Each entry specifies the model identifier, provider, tier, capability flags, and UI metadata. The domain service uses the catalog to resolve model selection, validate user requests, execute the downgrade cascade, and serve the Models API (section 3.3).
 
-**Catalog structure** (as delivered by `minichat-policy-plugin` in the policy snapshot; shown in YAML for readability):
+**Catalog structure** (as delivered by `mini-chat-model-policy-plugin` in the policy snapshot; shown in YAML for readability):
 
 ```yaml
 model_catalog:
   - model_id: "gpt-5.2"
+    provider_model_id: "gpt-5.2"
     display_name: "GPT-5.2"
     provider: "openai"
     tier: premium
@@ -2680,6 +2659,7 @@ model_catalog:
     max_output: 4096
     is_default: true
   - model_id: "gpt-5-mini"
+    provider_model_id: "gpt-5-mini"
     display_name: "GPT-5 Mini"
     provider: "openai"
     tier: standard
@@ -2695,7 +2675,8 @@ model_catalog:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `model_id` | string | yes | Internal model identifier passed to the provider (e.g., `gpt-5.2`). |
+| `model_id` | string | yes | Stable internal model identifier used in the REST API, stored in the database, and referenced in billing/quota. Format is not prescribed — may be a UUID, slug, or any unique string. |
+| `provider_model_id` | string | yes | The name that identifies the model on the provider side (e.g., `"gpt-5.2"` for OpenAI, `"claude-opus-4-6"` for Anthropic). This is the value sent in LLM API requests. |
 | `display_name` | string | yes | User-facing name shown in model selector UI (e.g., "GPT-5.2"). |
 | `provider` | string | yes | Internal provider routing identifier. P1 values: `"openai"`, `"azure_openai"`. |
 | `tier` | `premium` \| `standard` | yes | Determines rate limiting behavior and downgrade cascade order. |
@@ -2715,7 +2696,7 @@ model_catalog:
 - When a user selects a model at chat creation, the domain service MUST validate: (a) the `model_id` exists in the catalog, and (b) its `status` is `enabled`. Unknown or disabled models MUST be rejected with HTTP 400.
 - Image capability is resolved from `capabilities`: a model supports image input if `"VISION_INPUT"` is in its capabilities array. P1 invariant: all catalog models MUST include `VISION_INPUT`, so image-bearing turns are never rejected due to a downgrade to a non-vision model in P1. If a future catalog entry lacks `VISION_INPUT`, the existing 415 `unsupported_media` rejection logic applies.
 - `context_window` replaces the previous `context_limit` field in credit budget computation.
-- The catalog is fetched from `minichat-policy-plugin` at startup and refreshed via the existing snapshot delivery mechanism (section 5.2.3). Runtime model resolution and the Models API both use the in-memory cached catalog (only globally enabled models are candidates for visibility).
+- The catalog is fetched from `mini-chat-model-policy-plugin` at startup and refreshed via the existing snapshot delivery mechanism (section 5.2.3). Runtime model resolution and the Models API both use the in-memory cached catalog (only globally enabled models are candidates for visibility).
 
 Operational configuration of rate limits, quota allocations, and model catalog is managed by Product Operations. Configuration management processes are external to this design document; the configuration owner and change management workflow are defined by the platform operations team.
 
@@ -2724,6 +2705,7 @@ Operational configuration of rate limits, quota allocations, and model catalog i
 | Property | Rule |
 |----------|------|
 | `model_id` | Non-empty string, unique across catalog |
+| `provider_model_id` | Non-empty string |
 | `display_name` | Non-empty string |
 | `provider` | One of: `"openai"`, `"azure_openai"` |
 | `tier` | One of: `premium`, `standard` |
@@ -3506,7 +3488,7 @@ The overall scheme:
 - Mini-chat applies the snapshot at the turn boundary and stores `policy_version` in `chat_turn`.
 - Mini-chat reserves worst-case credits and checks day/month limits locally, without CCM RPC.
 - After the response, mini-chat commits actual credits and writes a usage event to the transactional outbox.
-- A background dispatcher publishes usage events via the selected `minichat-policy-plugin` plugin (`publish_usage(payload)`).
+- A background dispatcher publishes usage events via the selected `mini-chat-model-policy-plugin` plugin (`publish_usage(payload)`).
 - CCM consumes usage events and updates the balance.
 
 The user has **a single wallet of credits specifically for chat**. Per-tier limits are nested caps, enforced via bucket rows in `quota_usage` (section 3.7):
@@ -3518,9 +3500,9 @@ The user has **a single wallet of credits specifically for chat**. Per-tier limi
 
 Usage events MUST be idempotent (keyed by `turn_id` / `request_id`) and MUST include the debited credits (plus provider token usage as telemetry).
 
-### 5.2 Policy Plugin (`minichat-policy-plugin`)
+### 5.2 Policy Plugin (`mini-chat-model-policy-plugin`)
 
-The `minichat-policy-plugin` plugin capability provides:
+The `mini-chat-model-policy-plugin` plugin capability provides:
 
 - versioned policy snapshots (model catalog + multipliers + per-user limits)
 - usage publication via `publish_usage(payload)`
@@ -3549,6 +3531,7 @@ Contents (logically):
 - `model_catalog`:
 
   - `model_id`
+  - `provider_model_id` (the name that identifies the model on the provider side, e.g. `"gpt-5.2"`, `"claude-opus-4-6"`; sent in LLM API requests)
   - `display_name` (user-facing name; used by Models API)
   - `provider_display_name` (user-facing display name, e.g. `"OpenAI"`, `"Azure OpenAI"`; used by Models API — MUST NOT be a deployment handle, routing identifier, or internal provider key)
   - `tier` (premium/standard)
@@ -3678,7 +3661,7 @@ Code MUST NOT conflate PolicySnapshot with UserLimits. References to "snapshot" 
 
 **Startup bootstrap**:
 
-1. On first request per user after cold start (or during background reconciliation), Mini Chat MUST call `GetCurrentPolicyVersion(user_id)` via the `minichat-policy-plugin`.
+1. On first request per user after cold start (or during background reconciliation), Mini Chat MUST call `GetCurrentPolicyVersion(user_id)` via the `mini-chat-model-policy-plugin`.
 2. If a local PolicySnapshot for that version does not exist (neither in-memory nor in DB), Mini Chat MUST call `GetPolicySnapshot(user_id, policy_version)` and persist the result.
 3. Mini Chat MUST set `current_policy_version` in memory for that tenant to the fetched version.
 
@@ -3948,7 +3931,7 @@ In all cases `settlement_method` and (for capped overshoot) `overshoot_capped: t
 
 For each turn, the quota enforcement flow proceeds in five steps:
 
-1. Resolve current policy snapshot via `minichat-policy-plugin` (section 5.2)
+1. Resolve current policy snapshot via `mini-chat-model-policy-plugin` (section 5.2)
 2. Assemble request context and estimate worst-case usage
 3. Reserve credits and persist `policy_version_applied`
 4. Call provider with `max_output_tokens_applied` as hard cap
@@ -4769,7 +4752,7 @@ fn construct_dedupe_key(tenant_id: Uuid, turn_id: Uuid, request_id: Uuid) -> Str
 
 **Dispatcher worker**: a background dispatcher (ModKit `stateful` lifecycle task) polls `modkit_outbox_events` rows where `status = 'pending'` and `next_attempt_at <= now()`, filtered by `namespace = 'mini-chat'`, ordered by `created_at`. For each row:
 
-1. Publish the event to the selected `minichat-policy-plugin` plugin via `publish_usage(payload)`.
+1. Publish the event to the selected `mini-chat-model-policy-plugin` plugin via `publish_usage(payload)`.
 2. On success, set `status = 'delivered'` and update `updated_at`.
 3. On transient failure, increment `attempts`, set `next_attempt_at` with exponential backoff: `now() + min(2^attempts * base_delay, max_delay)`, keep `status = 'pending'`.
 
@@ -4825,7 +4808,7 @@ At-least-once delivery is allowed; duplicates are possible (see Idempotency rule
 
    `FOR UPDATE SKIP LOCKED` ensures that concurrent dispatchers never select the same rows. Commit the claim transaction before proceeding to publish.
 
-2. **Publish** — outside the claim transaction, publish each claimed event to the selected `minichat-policy-plugin` plugin.
+2. **Publish** — outside the claim transaction, publish each claimed event to the selected `mini-chat-model-policy-plugin` plugin.
 
 3. **On success** — update the row:
 
@@ -5826,7 +5809,7 @@ The system **MUST** finalize turns using CAS on `chat_turn.state` and MUST emit 
 
 # Appendix A — CCM Policy & Usage API Contract (P1)
 
-This appendix reproduces the CCM Policy & Usage API contract as defined in the official CCM specification (see referenced document). It is consumed by `minichat-policy-plugin` and governs policy distribution and usage ingestion for P1. This appendix does not redefine MiniChat internal algorithms.
+This appendix reproduces the CCM Policy & Usage API contract as defined in the official CCM specification (see referenced document). It is consumed by `mini-chat-model-policy-plugin` and governs policy distribution and usage ingestion for P1. This appendix does not redefine MiniChat internal algorithms.
 
 All CCM endpoints in this appendix are user-centric: request payloads are keyed by `user_id`.CCM derives `tenant_id` internally from the user's ownership/auth context. MiniChat retains `tenant_id` in its internal entities and persistence. The policy change notification endpoint is the only exception: it remains tenant-scoped.
 
@@ -5893,10 +5876,13 @@ A monotonic, strictly increasing integer that identifies a specific immutable po
     "model_catalog": [
       {
         "model_id": "gpt-5.2",
+        "provider_model_id": "gpt-5.2",
         "display_name": "GPT-5.2",
         "provider_display_name": "Azure OpenAI",
+        "provider_id": "azure_openai",
         "tier": "premium",
         "global_enabled": true,
+        "is_default": false,
         "description": "Best for complex reasoning tasks",
         "multimodal_capabilities": [
           "VISION_INPUT",
@@ -6105,7 +6091,7 @@ Legend:
 |-----------|------|---------|--------|-------|
 | `mini-chat.url_prefix` | `string` | `/mini-chat` | ConfigMap | ModKit module config, no CCM API equivalent |
 
-## B.2 Policy / Models / Limits (via `minichat-policy-plugin`)
+## B.2 Policy / Models / Limits (via `mini-chat-model-policy-plugin`)
 
 ### B.2.1 Policy version
 
@@ -6120,6 +6106,7 @@ All fields below are per-model entries inside the catalog.
 | Parameter | Type | Source | CCM API field |
 |-----------|------|--------|---------------|
 | `model_id` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].model_id` |
+| `provider_model_id` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].provider_model_id` |
 | `display_name` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].display_name` |
 | `provider` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].provider_id` + `provider_display_name` |
 | `tier` | `string` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].tier` |
@@ -6128,7 +6115,7 @@ All fields below are per-model entries inside the catalog.
 | `capabilities` | `string[]` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].multimodal_capabilities` |
 | `context_window` | `integer` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].context_window` |
 | `max_output` | `integer` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].max_output_tokens` |
-| `is_default` | `bool` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].preference.is_default` |
+| `is_default` | `bool` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].is_default` |
 | `input_tokens_credit_multiplier` | `number` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].general_config.token_policy.input_tokens_credit_multiplier` and `input_tokens_credit_multiplier_micro` |
 | `output_tokens_credit_multiplier` | `number` | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].general_config.token_policy.output_tokens_credit_multiplier` and `output_tokens_credit_multiplier_micro` |
 | `api_params.*` | object | **CCM API**: `GET /policies/{v}` | `snapshot.model_catalog[].general_config.api_params` |

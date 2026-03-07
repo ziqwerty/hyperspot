@@ -182,6 +182,45 @@ impl From<crate::domain::models::Reaction> for ReactionDto {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Model DTOs
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Response DTO for a single model.
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct ModelDto {
+    pub model_id: String,
+    pub display_name: String,
+    pub tier: String,
+    pub multiplier_display: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub multimodal_capabilities: Vec<String>,
+    pub context_window: u32,
+}
+
+impl From<crate::domain::models::ResolvedModel> for ModelDto {
+    fn from(m: crate::domain::models::ResolvedModel) -> Self {
+        Self {
+            model_id: m.model_id,
+            display_name: m.display_name,
+            tier: m.tier,
+            multiplier_display: m.multiplier_display,
+            description: m.description,
+            multimodal_capabilities: m.multimodal_capabilities,
+            context_window: m.context_window,
+        }
+    }
+}
+
+/// Response DTO for the model list endpoint.
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct ModelListDto {
+    pub items: Vec<ModelDto>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Streaming request DTOs
 // ════════════════════════════════════════════════════════════════════════════
 

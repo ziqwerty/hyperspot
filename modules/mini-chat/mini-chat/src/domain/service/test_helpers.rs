@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use authz_resolver_sdk::{
@@ -14,7 +14,7 @@ use sea_orm_migration::MigratorTrait;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::repos::model_resolver::ResolvedModel;
+use crate::domain::models::ResolvedModel;
 use crate::domain::repos::{
     ModelResolver, PolicySnapshotProvider, ThreadSummaryRepository, UserLimitsProvider,
 };
@@ -116,7 +116,63 @@ impl AuthZResolverClient for MockAuthZResolver {
 
 // ── Mock Model Resolver ──
 
-pub struct MockModelResolver;
+use mini_chat_sdk::ModelCatalogEntry;
+
+/// Mock model resolver with a configurable catalog.
+///
+/// Default catalog: `gpt-5.2` (enabled, default) and `gpt-5-mini` (disabled).
+pub struct MockModelResolver {
+    catalog: Mutex<Vec<ModelCatalogEntry>>,
+}
+
+impl MockModelResolver {
+    pub fn new(catalog: Vec<ModelCatalogEntry>) -> Self {
+        Self {
+            catalog: Mutex::new(catalog),
+        }
+    }
+}
+
+impl Default for MockModelResolver {
+    fn default() -> Self {
+        Self::new(vec![
+            ModelCatalogEntry {
+                model_id: "gpt-5.2".to_owned(),
+                provider_model_id: "azure-gpt-5.2-2025-03".to_owned(),
+                display_name: "GPT-5.2".to_owned(),
+                tier: mini_chat_sdk::ModelTier::Premium,
+                global_enabled: true,
+                is_default: true,
+                input_tokens_credit_multiplier_micro: 2_000_000,
+                output_tokens_credit_multiplier_micro: 6_000_000,
+                multimodal_capabilities: vec![],
+                context_window: 128_000,
+                max_output_tokens: 16_384,
+                description: String::new(),
+                provider_display_name: "OpenAI".to_owned(),
+                multiplier_display: "2x".to_owned(),
+                provider_id: "openai".to_owned(),
+            },
+            ModelCatalogEntry {
+                model_id: "gpt-5-mini".to_owned(),
+                provider_model_id: "azure-gpt-5-mini-2025-03".to_owned(),
+                display_name: "GPT-5 Mini".to_owned(),
+                tier: mini_chat_sdk::ModelTier::Standard,
+                global_enabled: false,
+                is_default: false,
+                input_tokens_credit_multiplier_micro: 1_000_000,
+                output_tokens_credit_multiplier_micro: 3_000_000,
+                multimodal_capabilities: vec![],
+                context_window: 64_000,
+                max_output_tokens: 8_192,
+                description: String::new(),
+                provider_display_name: "OpenAI".to_owned(),
+                multiplier_display: "1x".to_owned(),
+                provider_id: "openai".to_owned(),
+            },
+        ])
+    }
+}
 
 #[async_trait]
 impl ModelResolver for MockModelResolver {
@@ -125,27 +181,49 @@ impl ModelResolver for MockModelResolver {
         _user_id: Uuid,
         model: Option<String>,
     ) -> Result<ResolvedModel, DomainError> {
-        let catalog = [("gpt-5.2", "openai", true), ("gpt-5-mini", "openai", false)];
-
+        let catalog = self.catalog.lock().unwrap();
         match model {
-            None => Ok(ResolvedModel {
-                model_id: "gpt-5.2".to_owned(),
-                provider_id: "openai".to_owned(),
-            }),
+            None => {
+                let default = catalog
+                    .iter()
+                    .find(|m| m.is_default && m.global_enabled)
+                    .or_else(|| catalog.iter().find(|m| m.global_enabled));
+                match default {
+                    Some(e) => Ok(ResolvedModel::from(e)),
+                    None => Err(DomainError::invalid_model("no models available in catalog")),
+                }
+            }
             Some(m) if m.is_empty() => Err(DomainError::invalid_model("model must not be empty")),
             Some(m) => {
-                if let Some((_, provider_id, _)) =
-                    catalog.iter().find(|(id, _, enabled)| *id == m && *enabled)
-                {
-                    Ok(ResolvedModel {
-                        model_id: m,
-                        provider_id: provider_id.to_string(),
-                    })
-                } else {
-                    Err(DomainError::invalid_model(&m))
+                let entry = catalog.iter().find(|e| e.model_id == m && e.global_enabled);
+                match entry {
+                    Some(e) => Ok(ResolvedModel::from(e)),
+                    None => Err(DomainError::invalid_model(&m)),
                 }
             }
         }
+    }
+
+    async fn list_visible_models(&self, _user_id: Uuid) -> Result<Vec<ResolvedModel>, DomainError> {
+        let catalog = self.catalog.lock().unwrap();
+        Ok(catalog
+            .iter()
+            .filter(|m| m.global_enabled)
+            .map(ResolvedModel::from)
+            .collect())
+    }
+
+    async fn get_visible_model(
+        &self,
+        _user_id: Uuid,
+        model_id: &str,
+    ) -> Result<ResolvedModel, DomainError> {
+        let catalog = self.catalog.lock().unwrap();
+        catalog
+            .iter()
+            .find(|m| m.model_id == model_id && m.global_enabled)
+            .map(ResolvedModel::from)
+            .ok_or_else(|| DomainError::model_not_found(model_id))
     }
 }
 
@@ -189,8 +267,35 @@ pub fn mock_enforcer() -> PolicyEnforcer {
     PolicyEnforcer::new(authz)
 }
 
+/// Always-deny `AuthZ` resolver for authorization denial tests.
+struct DenyingAuthZResolver;
+
+#[async_trait]
+impl AuthZResolverClient for DenyingAuthZResolver {
+    async fn evaluate(
+        &self,
+        _request: EvaluationRequest,
+    ) -> Result<EvaluationResponse, AuthZResolverError> {
+        Ok(EvaluationResponse {
+            decision: false,
+            context: EvaluationResponseContext {
+                deny_reason: Some(DenyReason {
+                    error_code: "access_denied".to_owned(),
+                    details: Some("mock: always deny".to_owned()),
+                }),
+                ..Default::default()
+            },
+        })
+    }
+}
+
+pub fn mock_denying_enforcer() -> PolicyEnforcer {
+    let authz: Arc<dyn AuthZResolverClient> = Arc::new(DenyingAuthZResolver);
+    PolicyEnforcer::new(authz)
+}
+
 pub fn mock_model_resolver() -> Arc<dyn ModelResolver> {
-    Arc::new(MockModelResolver)
+    Arc::new(MockModelResolver::default())
 }
 
 pub fn mock_thread_summary_repo() -> Arc<dyn ThreadSummaryRepository> {
@@ -206,7 +311,6 @@ pub fn mock_db_provider(db: Db) -> Arc<DBProvider<modkit_db::DbError>> {
 // ── Mock Policy Snapshot Provider ──
 
 use mini_chat_sdk::{PolicySnapshot, UserLimits};
-use std::sync::Mutex;
 
 pub struct MockPolicySnapshotProvider {
     snapshot: Mutex<PolicySnapshot>,

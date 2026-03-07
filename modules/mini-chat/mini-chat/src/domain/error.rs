@@ -36,6 +36,9 @@ pub enum DomainError {
     #[error("Invalid reaction target: message {id} is not an assistant message")]
     InvalidReactionTarget { id: Uuid },
 
+    #[error("Model not found: {model_id}")]
+    ModelNotFound { model_id: String },
+
     #[error("Internal error: {message}")]
     InternalError { message: String },
 }
@@ -93,6 +96,13 @@ impl DomainError {
     #[must_use]
     pub fn invalid_reaction_target(id: Uuid) -> Self {
         Self::InvalidReactionTarget { id }
+    }
+
+    #[must_use]
+    pub fn model_not_found(model_id: impl Into<String>) -> Self {
+        Self::ModelNotFound {
+            model_id: model_id.into(),
+        }
     }
 
     #[must_use]

@@ -3,6 +3,7 @@ use modkit::api::OpenApiRegistry;
 use modkit::api::operation_builder::OperationBuilder;
 
 use super::AiChatLicense;
+use crate::api::rest::dto::{ModelDto, ModelListDto};
 use crate::api::rest::handlers;
 
 pub(super) fn register_model_routes(
@@ -18,7 +19,7 @@ pub(super) fn register_model_routes(
         .authenticated()
         .require_license_features([&AiChatLicense])
         .handler(handlers::models::list_models)
-        .json_response(http::StatusCode::OK, "List of models")
+        .json_response_with_schema::<ModelListDto>(openapi, http::StatusCode::OK, "List of models")
         .standard_errors(openapi)
         .register(router, openapi);
 
@@ -31,7 +32,7 @@ pub(super) fn register_model_routes(
         .require_license_features([&AiChatLicense])
         .path_param("id", "Model identifier")
         .handler(handlers::models::get_model)
-        .json_response(http::StatusCode::OK, "Model details")
+        .json_response_with_schema::<ModelDto>(openapi, http::StatusCode::OK, "Model details")
         .standard_errors(openapi)
         .register(router, openapi);
 

@@ -63,7 +63,7 @@ pub(crate) mod resources {
 
     pub const MODEL: ResourceType = ResourceType {
         name: "gts.cf.core.ai_chat.model.v1~cf.core.mini_chat.model.v1",
-        supported_properties: &[],
+        supported_properties: &[pep_properties::OWNER_TENANT_ID],
     };
 }
 

@@ -4,14 +4,14 @@
 # Based on quickstart.yaml but stripped to essentials.
 #
 # Usage:
-#   cargo run --bin hyperspot-server --features mini-chat -- --config config/mini-chat.yaml run
+#   cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant,static-credstore -- --config config/mini-chat.yaml run
 
 server:
   home_dir: "~/.hyperspot"
 
 database:
   servers:
-    sqlite_users:
+    sqlite_mini_chat:
       engine: "sqlite"
       params:
         WAL: "true"
@@ -88,10 +88,16 @@ modules:
 
   simple-user-settings:
     database:
-      server: "sqlite_users"
+      server: "sqlite_mini_chat"
       file: "settings.db"
     config:
       max_field_length: 100
+
+  static-credstore-plugin:
+    config:
+      secrets:
+        - key: "azure-openai-key"
+          value: "AZURE_OPENAI_API_KEY_PLACEHOLDER"
 
   file-parser:
     config:
@@ -99,20 +105,21 @@ modules:
 
   mini-chat:
     database:
-      server: "sqlite_users"
+      server: "sqlite_mini_chat"
       file: "mini_chat.db"
     config:
       # Provider registry. Key = provider_id (matches ModelCatalogEntry.provider_id).
       # `upstream_alias` is optional — defaults to `host` when omitted.
       providers:
-        openai:
+        azure_openai:
           kind: openai_responses
-          host: "api.openai.com"
+          host: "AZURE_OPENAI_API_HOST_PLACEHOLDER"
+          api_path: "/openai/v1/responses"
           auth_plugin_type: "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1"
           auth_config:
-            header: "Authorization"
-            prefix: "Bearer "
-            secret_ref: "cred://openai-key"
+            header: "api-key"
+            prefix: ""
+            secret_ref: "cred://azure-openai-key"
 
       # ── Azure OpenAI example (uncomment and set your endpoint) ──────────
       #   azure_openai:
@@ -151,51 +158,36 @@ modules:
       vendor: "hyperspot"
       priority: 100
       model_catalog:
-        - model_id: "gpt-5.2"
-          provider_model_id: "gpt-5.2"
-          display_name: "GPT-5.2"
+        - model_id: "gpt-4.1"
+          provider_model_id: "gpt-4.1"
+          display_name: "GPT-4.1"
           tier: Premium
           global_enabled: true
           is_default: true
           input_tokens_credit_multiplier_micro: 3000000
           output_tokens_credit_multiplier_micro: 15000000
           multimodal_capabilities: ["VISION_INPUT"]
-          context_window: 128000
-          max_output_tokens: 8192
+          context_window: 1047576
+          max_output_tokens: 32768
           description: "Most capable model"
-          provider_display_name: "OpenAI"
+          provider_display_name: "Azure OpenAI"
           multiplier_display: "3x"
-          provider_id: "openai"
-        - model_id: "gpt-5-mini"
-          provider_model_id: "gpt-5-mini"
-          display_name: "GPT-5 Mini"
+          provider_id: "azure_openai"
+        - model_id: "gpt-4.1-mini"
+          provider_model_id: "gpt-4.1-mini"
+          display_name: "GPT-4.1 Mini"
           tier: Standard
           global_enabled: true
           is_default: false
           input_tokens_credit_multiplier_micro: 1000000
           output_tokens_credit_multiplier_micro: 3000000
-          multimodal_capabilities: []
-          context_window: 128000
-          max_output_tokens: 4096
+          multimodal_capabilities: ["VISION_INPUT"]
+          context_window: 1047576
+          max_output_tokens: 32768
           description: "Fast and efficient model"
-          provider_display_name: "OpenAI"
+          provider_display_name: "Azure OpenAI"
           multiplier_display: "1x"
-          provider_id: "openai"
-        - model_id: "gpt-5-nano"
-          provider_model_id: "gpt-5-nano"
-          display_name: "GPT-5 Nano"
-          tier: Standard
-          global_enabled: true
-          is_default: false
-          input_tokens_credit_multiplier_micro: 500000
-          output_tokens_credit_multiplier_micro: 1500000
-          multimodal_capabilities: []
-          context_window: 64000
-          max_output_tokens: 4096
-          description: "Lightweight and fast model"
-          provider_display_name: "OpenAI"
-          multiplier_display: "0.5x"
-          provider_id: "openai"
+          provider_id: "azure_openai"
 
 tracing:
   enabled: false

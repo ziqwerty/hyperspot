@@ -428,7 +428,7 @@ example:
 
 ## Run server with mini-chat module
 mini-chat:
-	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant -- --config config/mini-chat.yaml run
+	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant,static-credstore -- --config config/mini-chat.yaml run
 
 oop-example:
 	cargo build -p calculator --features oop_module

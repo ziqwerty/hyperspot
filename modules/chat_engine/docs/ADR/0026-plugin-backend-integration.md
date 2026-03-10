@@ -6,7 +6,7 @@ Updated:  2026-03-09 by Constructor Tech
 
 **Status**: accepted — supersedes ADR-0006 (Synchronous HTTP Webhooks with Streaming)
 
-**ID**: `cpt-chat-engine-adr-plugin-backend-integration`
+**ID**: `cpt-cf-chat-engine-adr-plugin-backend-integration`
 
 ## Context and Problem Statement
 
@@ -107,13 +107,13 @@ Multiple session types can share the same `plugin_instance_id`. Each session typ
 
 **Actors**:
 
-* `cpt-chat-engine-actor-backend-plugin` — internal plugin code within Chat Engine; implements `ChatEngineBackendPlugin` trait
+* `cpt-cf-chat-engine-actor-backend-plugin` — internal plugin code within Chat Engine; implements `ChatEngineBackendPlugin` trait
 
 **Requirements**:
 
-* `cpt-chat-engine-fr-send-message` — plugin `on_message` call replaces webhook POST
-* `cpt-chat-engine-fr-create-session` — plugin `on_session_created` call replaces session.created webhook event
-* `cpt-chat-engine-fr-schema-extensibility` — plugin registers GTS derived schemas at startup
+* `cpt-cf-chat-engine-fr-send-message` — plugin `on_message` call replaces webhook POST
+* `cpt-cf-chat-engine-fr-create-session` — plugin `on_session_created` call replaces session.created webhook event
+* `cpt-cf-chat-engine-fr-schema-extensibility` — plugin registers GTS derived schemas at startup
 
 **Superseded ADRs**:
 

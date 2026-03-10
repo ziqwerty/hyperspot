@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-http-client-protocol`
+**ID**: `cpt-cf-chat-engine-adr-http-client-protocol`
 
 ## Context and Problem Statement
 
@@ -129,19 +129,19 @@ Clients cancel streaming by closing the HTTP connection. In browsers, this is do
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Web/mobile/desktop apps using HTTP REST and HTTP streaming
+* `cpt-cf-chat-engine-actor-client` - Web/mobile/desktop apps using HTTP REST and HTTP streaming
 * Chat Engine instances - HTTP server with chunked streaming support
 
 **Requirements**:
 * CRUD operations use HTTP REST for simplicity and standard patterns
 * Streaming operations use HTTP chunked transfer for real-time delivery
-* `cpt-chat-engine-nfr-streaming` - First byte < 200ms, overhead < 10ms per chunk
-* `cpt-chat-engine-nfr-response-time` - HTTP routing < 50ms
-* `cpt-chat-engine-fr-stop-streaming` - Cancellation via connection close
+* `cpt-cf-chat-engine-nfr-streaming` - First byte < 200ms, overhead < 10ms per chunk
+* `cpt-cf-chat-engine-nfr-response-time` - HTTP routing < 50ms
+* `cpt-cf-chat-engine-fr-stop-streaming` - Cancellation via connection close
 
 **Design Elements**:
 * HTTP server - Handles both CRUD and streaming operations
-* `cpt-chat-engine-response-streaming` - Manages HTTP chunked streaming
+* `cpt-cf-chat-engine-response-streaming` - Manages HTTP chunked streaming
 * HTTP REST API specification (Section 3.3.1 of DESIGN.md)
 * Webhook API specification (Section 3.3.3 of DESIGN.md)
 

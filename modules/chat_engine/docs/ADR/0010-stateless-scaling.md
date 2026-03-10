@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-stateless-scaling`
+**ID**: `cpt-cf-chat-engine-adr-stateless-scaling`
 
 ## Context and Problem Statement
 
@@ -49,16 +49,16 @@ Chosen option: "Stateless instances with database state", because it enables sim
 
 **Actors**:
 * Chat Engine instances (stateless pods) - HTTP servers with no persistent connection state
-* `cpt-chat-engine-actor-database` - Single source of truth for all state
+* `cpt-cf-chat-engine-actor-database` - Single source of truth for all state
 
 **Requirements**:
-* `cpt-chat-engine-nfr-scalability` - 10K concurrent sessions, horizontal scaling
-* `cpt-chat-engine-nfr-availability` - Instance failures must not affect service
-* `cpt-chat-engine-nfr-response-time` - Routing latency < 100ms despite database queries
+* `cpt-cf-chat-engine-nfr-scalability` - 10K concurrent sessions, horizontal scaling
+* `cpt-cf-chat-engine-nfr-availability` - Instance failures must not affect service
+* `cpt-cf-chat-engine-nfr-response-time` - Routing latency < 100ms despite database queries
 
 **Design Elements**:
-* `cpt-chat-engine-topology-cloud` - Kubernetes deployment with 3+ replicas
-* `cpt-chat-engine-constraint-single-database` - Database provides shared state
+* `cpt-cf-chat-engine-topology-cloud` - Kubernetes deployment with 3+ replicas
+* `cpt-cf-chat-engine-constraint-single-database` - Database provides shared state
 * All components designed as stateless services
 
 **Related ADRs**:

@@ -25,40 +25,40 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 
 | FDD ID | Solution Description |
 |--------|----------------------|
-| `cpt-chat-engine-fr-create-session` | RESTful API endpoint creates session record, invokes backend plugin with `session.created` event, stores returned `enabled_capabilities` (typed `Capability[]`) |
-| `cpt-chat-engine-fr-send-message` | HTTP streaming endpoint forwards message to backend plugin, pipes streamed response back to client, persists complete exchange after streaming |
-| `cpt-chat-engine-fr-attach-files` | Messages support file URL array field; client uploads to external storage first, includes URLs in message payload |
-| `cpt-chat-engine-fr-switch-session-type` | Session stores current session_type_id; switching updates this field and routes next message to new backend plugin |
-| `cpt-chat-engine-fr-recreate-response` | Creates new message with same parent_message_id as original, sends `message.recreate` event to backend plugin |
-| `cpt-chat-engine-fr-branch-message` | Client specifies parent_message_id; Chat Engine loads context up to parent, creates new branch in message tree |
-| `cpt-chat-engine-fr-navigate-variants` | Query API returns all messages with same parent_message_id; includes variant position metadata (e.g., "2 of 3") |
-| `cpt-chat-engine-fr-stop-streaming` | Client closes HTTP connection; Chat Engine cancels webhook request, saves partial response with incomplete flag |
-| `cpt-chat-engine-fr-export-session` | Background job traverses message tree (active path or all variants), formats to JSON/Markdown/TXT, uploads to storage |
-| `cpt-chat-engine-fr-share-session` | Generates unique share token stored in database, maps to session_id; recipients create branches from last message |
-| `cpt-chat-engine-fr-session-summary` | Routes `session.summary` event to dedicated summarization service URL or backend plugin based on session type config |
-| `cpt-chat-engine-fr-search-session` | Full-text search on messages table filtered by session_id; returns matches with context window |
-| `cpt-chat-engine-fr-search-sessions` | Full-text search across messages joined with sessions; ranks by relevance, returns session metadata |
-| `cpt-chat-engine-fr-delete-session` | Sends `session.deleted` event to backend plugin, then soft-deletes session and messages in database |
-| `cpt-chat-engine-fr-conversation-memory` | Message history forwarded to webhook with configurable depth; visibility flags (`is_hidden_from_backend`) enable context management strategies |
-| `cpt-chat-engine-fr-delete-message` | Hard delete individual messages with cascade reaction cleanup; ownership validation before deletion |
-| `cpt-chat-engine-fr-message-feedback` | UPSERT reaction per user per message; fire-and-forget webhook notification via `message.reaction` event |
-| `cpt-chat-engine-fr-context-overflow` | Session metadata exposes processing metrics; visibility flags and summary primitives enable overflow strategy implementation |
-| `cpt-chat-engine-fr-message-retention` | Background cleanup job enforces per-session-type retention policies; tree-aware deletion preserves active path integrity |
+| `cpt-cf-chat-engine-fr-create-session` | RESTful API endpoint creates session record, invokes backend plugin with `session.created` event, stores returned `enabled_capabilities` (typed `Capability[]`) |
+| `cpt-cf-chat-engine-fr-send-message` | HTTP streaming endpoint forwards message to backend plugin, pipes streamed response back to client, persists complete exchange after streaming |
+| `cpt-cf-chat-engine-fr-attach-files` | Messages support file URL array field; client uploads to external storage first, includes URLs in message payload |
+| `cpt-cf-chat-engine-fr-switch-session-type` | Session stores current session_type_id; switching updates this field and routes next message to new backend plugin |
+| `cpt-cf-chat-engine-fr-recreate-response` | Creates new message with same parent_message_id as original, sends `message.recreate` event to backend plugin |
+| `cpt-cf-chat-engine-fr-branch-message` | Client specifies parent_message_id; Chat Engine loads context up to parent, creates new branch in message tree |
+| `cpt-cf-chat-engine-fr-navigate-variants` | Query API returns all messages with same parent_message_id; includes variant position metadata (e.g., "2 of 3") |
+| `cpt-cf-chat-engine-fr-stop-streaming` | Client closes HTTP connection; Chat Engine cancels webhook request, saves partial response with incomplete flag |
+| `cpt-cf-chat-engine-fr-export-session` | Background job traverses message tree (active path or all variants), formats to JSON/Markdown/TXT, uploads to storage |
+| `cpt-cf-chat-engine-fr-share-session` | Generates unique share token stored in database, maps to session_id; recipients create branches from last message |
+| `cpt-cf-chat-engine-fr-session-summary` | Routes `session.summary` event to dedicated summarization service URL or backend plugin based on session type config |
+| `cpt-cf-chat-engine-fr-search-session` | Full-text search on messages table filtered by session_id; returns matches with context window |
+| `cpt-cf-chat-engine-fr-search-sessions` | Full-text search across messages joined with sessions; ranks by relevance, returns session metadata |
+| `cpt-cf-chat-engine-fr-delete-session` | Sends `session.deleted` event to backend plugin, then soft-deletes session and messages in database |
+| `cpt-cf-chat-engine-fr-conversation-memory` | Message history forwarded to webhook with configurable depth; visibility flags (`is_hidden_from_backend`) enable context management strategies |
+| `cpt-cf-chat-engine-fr-delete-message` | Hard delete individual messages with cascade reaction cleanup; ownership validation before deletion |
+| `cpt-cf-chat-engine-fr-message-feedback` | UPSERT reaction per user per message; fire-and-forget webhook notification via `message.reaction` event |
+| `cpt-cf-chat-engine-fr-context-overflow` | Session metadata exposes processing metrics; visibility flags and summary primitives enable overflow strategy implementation |
+| `cpt-cf-chat-engine-fr-message-retention` | Background cleanup job enforces per-session-type retention policies; tree-aware deletion preserves active path integrity |
 
 #### Non-functional Requirements
 
 | FDD ID | Solution Description |
 |--------|----------------------|
-| `cpt-chat-engine-nfr-response-time` | Async I/O event-driven architecture; database connection pooling; minimal business logic in routing layer |
-| `cpt-chat-engine-nfr-availability` | Stateless instances behind load balancer; health check endpoints; database read replicas for failover |
-| `cpt-chat-engine-nfr-scalability` | Horizontal scaling; database sharding by tenant_id; connection pool per instance |
-| `cpt-chat-engine-nfr-data-persistence` | Database transactions wrap message writes; acknowledge client only after commit confirmation |
-| `cpt-chat-engine-nfr-streaming` | HTTP chunked transfer encoding; buffering disabled; direct pipe from webhook to client |
-| `cpt-chat-engine-nfr-authentication` | JWT-based authentication; client_id, user_id, tenant_id claim extraction; session ownership validated by user_id; tenant isolation enforced by tenant_id on every request |
-| `cpt-chat-engine-nfr-data-integrity` | Database foreign key constraints on parent_message_id; unique constraint on (session_id, parent_message_id, variant_index) |
-| `cpt-chat-engine-nfr-backend-isolation` | Circuit breaker pattern per backend plugin; timeout configuration per session type; error isolation |
-| `cpt-chat-engine-nfr-file-size` | File size validation delegated to storage service; Chat Engine validates URL format and accessibility |
-| `cpt-chat-engine-nfr-search` | Full-text search indexes on message content; pagination with cursor-based queries |
+| `cpt-cf-chat-engine-nfr-response-time` | Async I/O event-driven architecture; database connection pooling; minimal business logic in routing layer |
+| `cpt-cf-chat-engine-nfr-availability` | Stateless instances behind load balancer; health check endpoints; database read replicas for failover |
+| `cpt-cf-chat-engine-nfr-scalability` | Horizontal scaling; database sharding by tenant_id; connection pool per instance |
+| `cpt-cf-chat-engine-nfr-data-persistence` | Database transactions wrap message writes; acknowledge client only after commit confirmation |
+| `cpt-cf-chat-engine-nfr-streaming` | HTTP chunked transfer encoding; buffering disabled; direct pipe from webhook to client |
+| `cpt-cf-chat-engine-nfr-authentication` | JWT-based authentication; client_id, user_id, tenant_id claim extraction; session ownership validated by user_id; tenant isolation enforced by tenant_id on every request |
+| `cpt-cf-chat-engine-nfr-data-integrity` | Database foreign key constraints on parent_message_id; unique constraint on (session_id, parent_message_id, variant_index) |
+| `cpt-cf-chat-engine-nfr-backend-isolation` | Circuit breaker pattern per backend plugin; timeout configuration per session type; error isolation |
+| `cpt-cf-chat-engine-nfr-file-size` | File size validation delegated to storage service; Chat Engine validates URL format and accessibility |
+| `cpt-cf-chat-engine-nfr-search` | Full-text search indexes on message content; pagination with cursor-based queries |
 
 ### 1.3 Architecture Layers
 
@@ -75,7 +75,7 @@ The system supports both **linear conversations** (traditional chat) and **non-l
 
 #### Principle: Immutable Message Tree
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-principle-immutable-tree`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-immutable-tree`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0001
@@ -85,17 +85,17 @@ Once a message is created with a parent_message_id, that relationship is immutab
 
 #### Principle: Backend Plugin Authority
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-principle-backend-authority`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-backend-authority`
 
 <!-- fdd-id-content -->
-**ADRs**: `cpt-chat-engine-adr-capability-model` (ADR-0002), `cpt-chat-engine-adr-plugin-backend-integration` (ADR-0026), `cpt-chat-engine-adr-llm-gateway-plugin` (ADR-0027)
+**ADRs**: `cpt-cf-chat-engine-adr-capability-model` (ADR-0002), `cpt-cf-chat-engine-adr-plugin-backend-integration` (ADR-0026), `cpt-cf-chat-engine-adr-llm-gateway-plugin` (ADR-0027)
 
-Backend plugins are code modules inside Chat Engine implementing the `ChatEngineBackendPlugin` trait. A session type references its plugin via `plugin_instance_id`. On `on_session_type_configured`, the plugin returns `Vec<Capability>` stored as `SessionType.available_capabilities`. On each message operation, Chat Engine calls the corresponding trait method and receives a `ResponseStream`. Plugins own all outbound communication — for example, the LLM gateway plugin makes HTTP requests to the LLM gateway service. Chat Engine does not interpret capability semantics, transport details, or external service protocols. Plugins may extend `SessionType.metadata` and `Message.metadata` with typed fields by registering GTS derived schemas — see `cpt-chat-engine-adr-llm-gateway-plugin`.
+Backend plugins are code modules inside Chat Engine implementing the `ChatEngineBackendPlugin` trait. A session type references its plugin via `plugin_instance_id`. On `on_session_type_configured`, the plugin returns `Vec<Capability>` stored as `SessionType.available_capabilities`. On each message operation, Chat Engine calls the corresponding trait method and receives a `ResponseStream`. Plugins own all outbound communication — for example, the LLM gateway plugin makes HTTP requests to the LLM gateway service. Chat Engine does not interpret capability semantics, transport details, or external service protocols. Plugins may extend `SessionType.metadata` and `Message.metadata` with typed fields by registering GTS derived schemas — see `cpt-cf-chat-engine-adr-llm-gateway-plugin`.
 <!-- fdd-id-content -->
 
 #### Principle: Stream Everything
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-principle-streaming`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-streaming`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0003
@@ -105,7 +105,7 @@ All plugin responses are streamed by default to minimize time-to-first-byte. Plu
 
 #### Principle: Zero Business Logic in Routing
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-principle-zero-business-logic`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-principle-zero-business-logic`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0004
@@ -117,7 +117,7 @@ Chat Engine does not process, analyze, or transform message content. All busines
 
 #### Constraint: External File Storage
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-constraint-external-storage`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-constraint-external-storage`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0005
@@ -127,7 +127,7 @@ Chat Engine does not store file content. Clients must upload files to File Stora
 
 #### Constraint: Synchronous Webhook Invocation
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-constraint-sync-webhooks`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-constraint-sync-webhooks`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0006
@@ -137,7 +137,7 @@ Webhook backends must respond synchronously (with streaming) over HTTP. Asynchro
 
 #### Constraint: Single Database Instance
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-constraint-single-database`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-constraint-single-database`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0007
@@ -391,56 +391,56 @@ Chat Engine is deployed as a unified monolithic service. All functionality is im
 
 #### Chat Engine Service
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-component-service`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-service`
 
 **Responsibility scope**: Persistence, routing, and message tree management. Chat Engine does not interpret message content.
 
-**Responsibility boundaries**: Content moderation, AI processing, and summarization logic belong to backend plugins. File content storage belongs to File Storage Service. See `cpt-chat-engine-principle-zero-business-logic`.
+**Responsibility boundaries**: Content moderation, AI processing, and summarization logic belong to backend plugins. File content storage belongs to File Storage Service. See `cpt-cf-chat-engine-principle-zero-business-logic`.
 
 **Related components (by ID)**:
-- `cpt-chat-engine-actor-backend-plugin` — processes messages; called by Webhook Integration module
-- `cpt-chat-engine-actor-file-storage` — stores file content; called by Conversation Export module
-- `cpt-chat-engine-actor-database` — persists all session and message state
+- `cpt-cf-chat-engine-actor-backend-plugin` — processes messages; called by Webhook Integration module
+- `cpt-cf-chat-engine-actor-file-storage` — stores file content; called by Conversation Export module
+- `cpt-cf-chat-engine-actor-database` — persists all session and message state
 
 #### Session Management Module
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-component-session-management`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-session-management`
 
 Session lifecycle operations: create, delete, retrieve, type switching, share token generation. Invokes webhook with `session.created` event.
 
 #### Message Processing Module
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-component-message-processing`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-message-processing`
 
 Message tree management: creation, persistence, parent validation, variant_index assignment, tree constraints. **ADRs**: ADR-0001, ADR-0014, ADR-0016.
 
 #### Webhook Integration Module
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-component-webhook-integration`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-webhook-integration`
 
 HTTP client for webhook invocation: event payload construction, timeout handling, circuit breaker pattern. **ADRs**: ADR-0004, ADR-0006, ADR-0011, ADR-0013.
 
 #### Response Streaming Module
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-component-response-streaming`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-component-response-streaming`
 
 HTTP chunked streaming: webhook-to-client pipe, backpressure control, connection cancellation, partial response saving. **ADRs**: ADR-0003, ADR-0009, ADR-0012.
 
 #### Conversation Export Module
 
-- [ ] `p3` - **ID**: `cpt-chat-engine-component-conversation-export`
+- [ ] `p3` - **ID**: `cpt-cf-chat-engine-component-conversation-export`
 
 Message tree traversal, format rendering (JSON/Markdown/TXT), file storage upload. Supports active path and full tree export.
 
 #### Message Search Module
 
-- [ ] `p3` - **ID**: `cpt-chat-engine-component-message-search`
+- [ ] `p3` - **ID**: `cpt-cf-chat-engine-component-message-search`
 
 Full-text search across messages: session-scoped and cross-session search, ranking, pagination, context window retrieval. **ADRs**: ADR-0023.
 
 #### Message Reactions Module
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-component-message-reactions`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-component-message-reactions`
 
 Per-user per-message reactions with UPSERT semantics. Fire-and-forget webhook notification. Cascade delete on message removal. **ADRs**: ADR-0024.
 
@@ -505,10 +505,10 @@ Chat Engine depends on the following internal modules at runtime.
 
 #### S1: Configure Session Type
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-seq-configure-session-type`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-configure-session-type`
 **Use Case**: Admin configures new session type
-**Actors**: `cpt-chat-engine-actor-developer`
-**PRD Reference**: Backend configuration (implicit in `cpt-chat-engine-fr-create-session`)
+**Actors**: `cpt-cf-chat-engine-actor-developer`
+**PRD Reference**: Backend configuration (implicit in `cpt-cf-chat-engine-fr-create-session`)
 
 ```mermaid
 sequenceDiagram
@@ -531,9 +531,9 @@ sequenceDiagram
 
 #### S2: Create Session and Send First Message
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-seq-create-session`
-**Use Case**: `cpt-chat-engine-usecase-create-session`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-create-session`
+**Use Case**: `cpt-cf-chat-engine-usecase-create-session`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -568,9 +568,9 @@ sequenceDiagram
 
 #### S3: Send Message with File Attachments
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-seq-send-message-with-files`
-**Use Case**: `cpt-chat-engine-fr-attach-files`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-file-storage`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-send-message-with-files`
+**Use Case**: `cpt-cf-chat-engine-fr-attach-files`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-file-storage`
 
 ```mermaid
 sequenceDiagram
@@ -602,9 +602,9 @@ sequenceDiagram
 
 #### S4: Switch Session Type Mid-Conversation
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-seq-switch-session-type`
-**Use Case**: `cpt-chat-engine-fr-switch-session-type`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-seq-switch-session-type`
+**Use Case**: `cpt-cf-chat-engine-fr-switch-session-type`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -632,9 +632,9 @@ sequenceDiagram
 
 #### S5: Recreate Assistant Response (Variant Creation)
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-seq-recreate-response`
-**Use Case**: `cpt-chat-engine-usecase-recreate-response`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-recreate-response`
+**Use Case**: `cpt-cf-chat-engine-usecase-recreate-response`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -660,9 +660,9 @@ sequenceDiagram
 
 #### S6: Branch from Historical Message
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-seq-branch-message`
-**Use Case**: `cpt-chat-engine-usecase-branch-message`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-seq-branch-message`
+**Use Case**: `cpt-cf-chat-engine-usecase-branch-message`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -692,9 +692,9 @@ sequenceDiagram
 
 #### S7: Navigate Message Variants
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-seq-navigate-variants`
-**Use Case**: `cpt-chat-engine-fr-navigate-variants`
-**Actors**: `cpt-chat-engine-actor-client`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-seq-navigate-variants`
+**Use Case**: `cpt-cf-chat-engine-fr-navigate-variants`
+**Actors**: `cpt-cf-chat-engine-actor-client`
 
 ```mermaid
 sequenceDiagram
@@ -714,9 +714,9 @@ sequenceDiagram
 
 #### S8: Export Session
 
-- [ ] `p3` - **ID**: `cpt-chat-engine-seq-export-session`
-**Use Case**: `cpt-chat-engine-usecase-export-session`
-**Actors**: `cpt-chat-engine-actor-client`
+- [ ] `p3` - **ID**: `cpt-cf-chat-engine-seq-export-session`
+**Use Case**: `cpt-cf-chat-engine-usecase-export-session`
+**Actors**: `cpt-cf-chat-engine-actor-client`
 
 ```mermaid
 sequenceDiagram
@@ -737,9 +737,9 @@ sequenceDiagram
 
 #### S9: Share Session
 
-- [ ] `p3` - **ID**: `cpt-chat-engine-seq-share-session`
-**Use Case**: `cpt-chat-engine-usecase-share-session`
-**Actors**: `cpt-chat-engine-actor-end-user`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p3` - **ID**: `cpt-cf-chat-engine-seq-share-session`
+**Use Case**: `cpt-cf-chat-engine-usecase-share-session`
+**Actors**: `cpt-cf-chat-engine-actor-end-user`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -775,9 +775,9 @@ sequenceDiagram
 
 #### S10: Stop Streaming Response (Connection Close)
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-seq-stop-streaming`
-**Use Case**: `cpt-chat-engine-fr-stop-streaming`
-**Actors**: `cpt-chat-engine-actor-client`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-stop-streaming`
+**Use Case**: `cpt-cf-chat-engine-fr-stop-streaming`
+**Actors**: `cpt-cf-chat-engine-actor-client`
 
 **Note**: With HTTP streaming, cancellation is achieved by closing the connection, not by sending a separate API call.
 
@@ -810,9 +810,9 @@ sequenceDiagram
 
 #### S11: Search Session History
 
-- [ ] `p3` - **ID**: `cpt-chat-engine-seq-search-session`
-**Use Case**: `cpt-chat-engine-fr-search-session`
-**Actors**: `cpt-chat-engine-actor-client`
+- [ ] `p3` - **ID**: `cpt-cf-chat-engine-seq-search-session`
+**Use Case**: `cpt-cf-chat-engine-fr-search-session`
+**Actors**: `cpt-cf-chat-engine-actor-client`
 
 ```mermaid
 sequenceDiagram
@@ -830,9 +830,9 @@ sequenceDiagram
 
 #### S12: Search Across Sessions
 
-- [ ] `p3` - **ID**: `cpt-chat-engine-seq-search-sessions`
-**Use Case**: `cpt-chat-engine-fr-search-sessions`
-**Actors**: `cpt-chat-engine-actor-client`
+- [ ] `p3` - **ID**: `cpt-cf-chat-engine-seq-search-sessions`
+**Use Case**: `cpt-cf-chat-engine-fr-search-sessions`
+**Actors**: `cpt-cf-chat-engine-actor-client`
 
 ```mermaid
 sequenceDiagram
@@ -848,9 +848,9 @@ sequenceDiagram
 
 #### S13: Generate Session Summary
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-seq-generate-summary`
-**Use Case**: `cpt-chat-engine-fr-session-summary`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-seq-generate-summary`
+**Use Case**: `cpt-cf-chat-engine-fr-session-summary`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -897,9 +897,9 @@ sequenceDiagram
 
 #### S14: Add Message Reaction (HTTP)
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-seq-add-reaction`
-**Use Case**: `cpt-chat-engine-fr-message-feedback`
-**Actors**: `cpt-chat-engine-actor-client`, `cpt-chat-engine-actor-backend-plugin`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-seq-add-reaction`
+**Use Case**: `cpt-cf-chat-engine-fr-message-feedback`
+**Actors**: `cpt-cf-chat-engine-actor-client`, `cpt-cf-chat-engine-actor-backend-plugin`
 
 ```mermaid
 sequenceDiagram
@@ -934,9 +934,9 @@ sequenceDiagram
 
 #### S15: Remove Message with Reactions (Cascade Delete)
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-seq-delete-message-cascade`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-seq-delete-message-cascade`
 **Use Case**: Message deletion with reaction cleanup
-**Actors**: `cpt-chat-engine-actor-client`
+**Actors**: `cpt-cf-chat-engine-actor-client`
 
 ```mermaid
 sequenceDiagram
@@ -964,7 +964,7 @@ sequenceDiagram
 
 #### Table: sessions
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-dbtable-sessions`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-sessions`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -982,7 +982,7 @@ sequenceDiagram
 
 #### Table: messages
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-dbtable-messages`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-messages`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1004,7 +1004,7 @@ sequenceDiagram
 
 #### Table: message_reactions
 
-- [ ] `p2` - **ID**: `cpt-chat-engine-dbtable-reactions`
+- [ ] `p2` - **ID**: `cpt-cf-chat-engine-dbtable-reactions`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1018,7 +1018,7 @@ sequenceDiagram
 
 #### Table: session_types
 
-- [ ] `p1` - **ID**: `cpt-chat-engine-dbtable-session-types`
+- [ ] `p1` - **ID**: `cpt-cf-chat-engine-dbtable-session-types`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -1032,7 +1032,7 @@ sequenceDiagram
 
 ### 3.5 Authorization Model
 
-**ID**: `cpt-chat-engine-design-auth-model`
+**ID**: `cpt-cf-chat-engine-design-auth-model`
 
 #### Authentication
 
@@ -1056,7 +1056,7 @@ Chat Engine does not add authentication headers to webhook requests. Webhook end
 
 ### 3.6 Data Protection
 
-**ID**: `cpt-chat-engine-design-data-protection`
+**ID**: `cpt-cf-chat-engine-design-data-protection`
 
 #### Personal Data Classification
 
@@ -1073,8 +1073,8 @@ Chat Engine does not add authentication headers to webhook requests. Webhook end
 
 - **Soft delete**: Marks session as `soft_deleted`; data preserved for recovery window
 - **Hard delete**: Permanently removes session, messages, reactions, and metadata
-- **Individual message deletion**: `cpt-chat-engine-fr-delete-message` enables targeted erasure
-- **Automated cleanup**: `cpt-chat-engine-fr-message-retention` for age-based or count-based cleanup
+- **Individual message deletion**: `cpt-cf-chat-engine-fr-delete-message` enables targeted erasure
+- **Automated cleanup**: `cpt-cf-chat-engine-fr-message-retention` for age-based or count-based cleanup
 
 #### Data in Transit
 
@@ -1086,7 +1086,7 @@ Database-level encryption is an infrastructure concern configured at the databas
 
 ### 3.7 Observability
 
-**ID**: `cpt-chat-engine-design-observability`
+**ID**: `cpt-cf-chat-engine-design-observability`
 
 #### Structured Logging
 
@@ -1113,7 +1113,7 @@ All request handling emits structured log events with the following fields: `tra
 
 ### 3.8 Testing Architecture
 
-**ID**: `cpt-chat-engine-design-testing-arch`
+**ID**: `cpt-cf-chat-engine-design-testing-arch`
 
 | Layer | Scope | Approach |
 |-------|-------|----------|
@@ -1128,7 +1128,7 @@ Test isolation: each test case uses independent database state (transaction roll
 
 #### Context: Message Tree Traversal
 
-**ID**: `cpt-chat-engine-design-context-tree-traversal`
+**ID**: `cpt-cf-chat-engine-design-context-tree-traversal`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0001 (tree structure)
@@ -1138,7 +1138,7 @@ Message tree traversal follows parent_message_id references. Active path is comp
 
 #### Context: Webhook Circuit Breaker
 
-**ID**: `cpt-chat-engine-design-context-circuit-breaker`
+**ID**: `cpt-cf-chat-engine-design-context-circuit-breaker`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0011
@@ -1148,7 +1148,7 @@ Circuit breaker pattern prevents cascade failures from slow/failing backend plug
 
 #### Context: Streaming Backpressure
 
-**ID**: `cpt-chat-engine-design-context-backpressure`
+**ID**: `cpt-cf-chat-engine-design-context-backpressure`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0012
@@ -1158,7 +1158,7 @@ Streaming implementation uses bidirectional data streams with backpressure handl
 
 #### Context: Search Performance
 
-**ID**: `cpt-chat-engine-design-context-search`
+**ID**: `cpt-cf-chat-engine-design-context-search`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0023
@@ -1168,7 +1168,7 @@ Full-text search is implemented using database full-text search capabilities wit
 
 #### Context: File Storage Integration
 
-**ID**: `cpt-chat-engine-design-context-file-storage`
+**ID**: `cpt-cf-chat-engine-design-context-file-storage`
 
 <!-- fdd-id-content -->
 **ADRs**: ADR-0005
@@ -1178,7 +1178,7 @@ Chat Engine never stores file content. Clients upload directly to File Storage S
 
 #### Context: Session Type Configuration Security
 
-**ID**: `cpt-chat-engine-design-context-security`
+**ID**: `cpt-cf-chat-engine-design-context-security`
 
 <!-- fdd-id-content -->
 Session type webhook URLs are stored in plaintext in database. Webhook backends must implement their own authentication (API keys, mutual TLS). Chat Engine does not validate webhook responses beyond HTTP status codes. Malicious backend plugins can return arbitrary content. Session type creation should be restricted to admin users only.
@@ -1186,7 +1186,7 @@ Session type webhook URLs are stored in plaintext in database. Webhook backends 
 
 #### Context: Error Response Security Pattern
 
-**ID**: `cpt-chat-engine-design-context-error-security`
+**ID**: `cpt-cf-chat-engine-design-context-error-security`
 
 <!-- fdd-id-content -->
 Error responses use the `ErrorDetails` schema to prevent leaking internal implementation details to clients. The schema enforces `additionalProperties: false` and defines explicit fields for each error scenario:
@@ -1213,12 +1213,12 @@ Aspects acknowledged and intentionally excluded from this DESIGN.
 
 | Category | Exclusion | Reason |
 |----------|-----------|--------|
-| **Content Safety** | Content moderation, toxicity filtering | Delegated to backend plugins (Principle: Zero Business Logic in Routing — `cpt-chat-engine-principle-zero-business-logic`) |
+| **Content Safety** | Content moderation, toxicity filtering | Delegated to backend plugins (Principle: Zero Business Logic in Routing — `cpt-cf-chat-engine-principle-zero-business-logic`) |
 | **Accessibility** | UI/UX accessibility requirements | Backend service; client application responsibility |
 | **Internationalization** | Multi-language UI, locale handling | Not applicable; message content is opaque to Chat Engine |
 | **Rate Limiting** | Throttling algorithms, quota management | Handled at API gateway layer upstream of Chat Engine |
-| **Application Caching** | In-process or distributed cache | Excluded per `cpt-chat-engine-constraint-single-database` |
+| **Application Caching** | In-process or distributed cache | Excluded per `cpt-cf-chat-engine-constraint-single-database` |
 | **Message Encryption** | Application-level field encryption | Infrastructure-level database encryption handles data-at-rest |
-| **Async Queue** | Message queue / event bus integration | Excluded per `cpt-chat-engine-constraint-sync-webhooks` |
+| **Async Queue** | Message queue / event bus integration | Excluded per `cpt-cf-chat-engine-constraint-sync-webhooks` |
 | **Deployment** | Container orchestration, cloud-specific config | Infrastructure concern; out of DESIGN scope |
 | **Client SDKs** | SDK implementation details | Covered by developer experience NFR; not a design deliverable |

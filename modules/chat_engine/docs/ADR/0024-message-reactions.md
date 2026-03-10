@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-message-reactions`
+**ID**: `cpt-cf-chat-engine-adr-message-reactions`
 
 ## Context and Problem Statement
 
@@ -81,20 +81,20 @@ Table `message_reactions` with composite primary key (message_id, user_id). Colu
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Submits reactions via HTTP POST, receives immediate confirmation
-* `cpt-chat-engine-actor-backend-plugin` - Receives reaction events for analytics and side effects
+* `cpt-cf-chat-engine-actor-client` - Submits reactions via HTTP POST, receives immediate confirmation
+* `cpt-cf-chat-engine-actor-backend-plugin` - Receives reaction events for analytics and side effects
 
 **Requirements**:
-* `cpt-chat-engine-fr-message-reactions` - Users can like/dislike messages
-* `cpt-chat-engine-fr-reaction-change` - Users can change or remove their reaction
-* `cpt-chat-engine-nfr-reaction-idempotency` - Multiple identical requests produce same result
-* `cpt-chat-engine-nfr-data-integrity` - Composite PK enforces one reaction per user per message
+* `cpt-cf-chat-engine-fr-message-reactions` - Users can like/dislike messages
+* `cpt-cf-chat-engine-fr-reaction-change` - Users can change or remove their reaction
+* `cpt-cf-chat-engine-nfr-reaction-idempotency` - Multiple identical requests produce same result
+* `cpt-cf-chat-engine-nfr-data-integrity` - Composite PK enforces one reaction per user per message
 
 **Design Elements**:
-* `cpt-chat-engine-entity-message-reaction` - Reaction entity with composite key
-* `cpt-chat-engine-api-http-reaction` - HTTP endpoint POST /messages/{id}/reaction
-* `cpt-chat-engine-webhook-message-reaction` - Webhook event message.reaction
-* `cpt-chat-engine-principle-message-immutability` - Reactions don't modify messages
+* `cpt-cf-chat-engine-entity-message-reaction` - Reaction entity with composite key
+* `cpt-cf-chat-engine-api-http-reaction` - HTTP endpoint POST /messages/{id}/reaction
+* `cpt-cf-chat-engine-webhook-message-reaction` - Webhook event message.reaction
+* `cpt-cf-chat-engine-principle-message-immutability` - Reactions don't modify messages
 * Sequence diagrams: S14 (Add Message Reaction), S15 (Remove Message with Reactions)
 
 **Related ADRs**:

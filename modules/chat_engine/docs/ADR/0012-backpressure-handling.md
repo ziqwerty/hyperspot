@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-backpressure-handling`
+**ID**: `cpt-cf-chat-engine-adr-backpressure-handling`
 
 ## Context and Problem Statement
 
@@ -49,17 +49,17 @@ Chosen option: "Per-stream buffer with limit and pause", because it prevents mem
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-response-streaming` - Implements buffer and backpressure logic
-* `cpt-chat-engine-actor-backend-plugin` - Paused via HTTP/2 flow control
-* `cpt-chat-engine-actor-client` - Slow consumption triggers backpressure
+* `cpt-cf-chat-engine-response-streaming` - Implements buffer and backpressure logic
+* `cpt-cf-chat-engine-actor-backend-plugin` - Paused via HTTP/2 flow control
+* `cpt-cf-chat-engine-actor-client` - Slow consumption triggers backpressure
 
 **Requirements**:
-* `cpt-chat-engine-nfr-streaming` - Backpressure handling requirement
-* `cpt-chat-engine-fr-stop-streaming` - Client disconnect cancels backend
+* `cpt-cf-chat-engine-nfr-streaming` - Backpressure handling requirement
+* `cpt-cf-chat-engine-fr-stop-streaming` - Client disconnect cancels backend
 
 **Design Elements**:
-* `cpt-chat-engine-design-context-backpressure` - Implementation details (10MB limit, HTTP/2 flow control)
-* `cpt-chat-engine-response-streaming` - Buffer management per stream
+* `cpt-cf-chat-engine-design-context-backpressure` - Implementation details (10MB limit, HTTP/2 flow control)
+* `cpt-cf-chat-engine-response-streaming` - Buffer management per stream
 
 **Related ADRs**:
 * ADR-0003 (Streaming Architecture) - Streaming design depends on backpressure handling

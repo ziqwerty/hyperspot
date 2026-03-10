@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-streaming-architecture`
+**ID**: `cpt-cf-chat-engine-adr-streaming-architecture`
 
 ## Context and Problem Statement
 
@@ -47,19 +47,19 @@ Chosen option: "Streaming-first with HTTP chunked transfer", because it minimize
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Receives HTTP chunked responses with streaming message chunks (NDJSON)
-* `cpt-chat-engine-actor-backend-plugin` - Streams HTTP responses (chunked transfer encoding)
+* `cpt-cf-chat-engine-actor-client` - Receives HTTP chunked responses with streaming message chunks (NDJSON)
+* `cpt-cf-chat-engine-actor-backend-plugin` - Streams HTTP responses (chunked transfer encoding)
 
 **Requirements**:
-* `cpt-chat-engine-fr-send-message` - Streaming response from backend to client
-* `cpt-chat-engine-fr-stop-streaming` - Cancel streaming mid-generation
-* `cpt-chat-engine-nfr-streaming` - Latency < 10ms overhead, first byte < 200ms
-* `cpt-chat-engine-nfr-response-time` - Overall routing latency < 100ms
+* `cpt-cf-chat-engine-fr-send-message` - Streaming response from backend to client
+* `cpt-cf-chat-engine-fr-stop-streaming` - Cancel streaming mid-generation
+* `cpt-cf-chat-engine-nfr-streaming` - Latency < 10ms overhead, first byte < 200ms
+* `cpt-cf-chat-engine-nfr-response-time` - Overall routing latency < 100ms
 
 **Design Elements**:
-* `cpt-chat-engine-response-streaming` - Chat Engine's HTTP chunked streaming and backpressure functionality
-* `cpt-chat-engine-principle-streaming` - Design principle mandating streaming-first
-* `cpt-chat-engine-design-context-backpressure` - Implementation details for flow control
+* `cpt-cf-chat-engine-response-streaming` - Chat Engine's HTTP chunked streaming and backpressure functionality
+* `cpt-cf-chat-engine-principle-streaming` - Design principle mandating streaming-first
+* `cpt-cf-chat-engine-design-context-backpressure` - Implementation details for flow control
 
 **Related ADRs**:
 * ADR-0006 (Webhook Protocol) - HTTP streaming from backends via chunked encoding

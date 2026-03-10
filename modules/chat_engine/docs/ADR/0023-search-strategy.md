@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-search-strategy`
+**ID**: `cpt-cf-chat-engine-adr-search-strategy`
 
 ## Context and Problem Statement
 
@@ -50,17 +50,17 @@ Chosen option: "PostgreSQL tsvector with GIN indexes", because it provides built
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Submits search queries, receives ranked results
-* `cpt-chat-engine-message-search` - Executes full-text queries
+* `cpt-cf-chat-engine-actor-client` - Submits search queries, receives ranked results
+* `cpt-cf-chat-engine-message-search` - Executes full-text queries
 
 **Requirements**:
-* `cpt-chat-engine-fr-search-session` - Session-scoped full-text search
-* `cpt-chat-engine-fr-search-sessions` - Cross-session full-text search
-* `cpt-chat-engine-nfr-search` - Performance requirements (1s session, 3s cross-session)
+* `cpt-cf-chat-engine-fr-search-session` - Session-scoped full-text search
+* `cpt-cf-chat-engine-fr-search-sessions` - Cross-session full-text search
+* `cpt-cf-chat-engine-nfr-search` - Performance requirements (1s session, 3s cross-session)
 
 **Design Elements**:
-* `cpt-chat-engine-db-table-messages` - Full-text index on content field
-* `cpt-chat-engine-design-context-search` - Implementation details (tsvector, GIN, ts_rank_cd)
+* `cpt-cf-chat-engine-db-table-messages` - Full-text index on content field
+* `cpt-cf-chat-engine-design-context-search` - Implementation details (tsvector, GIN, ts_rank_cd)
 * HTTP POST /sessions/{id}/search and POST /search endpoints
 
 **Related ADRs**:

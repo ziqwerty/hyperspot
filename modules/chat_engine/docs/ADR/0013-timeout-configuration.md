@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: superseded by ADR-0026 — timeout responsibility moved to plugin / webhook-compat plugin
 
-**ID**: `cpt-chat-engine-adr-timeout-configuration`
+**ID**: `cpt-cf-chat-engine-adr-timeout-configuration`
 
 ## Context and Problem Statement
 
@@ -49,15 +49,15 @@ Chosen option: "Per-session-type timeout in database", because it enables backen
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-webhook-integration` - Enforces timeout per backend
-* `cpt-chat-engine-actor-developer` - Configures timeout per session type
+* `cpt-cf-chat-engine-webhook-integration` - Enforces timeout per backend
+* `cpt-cf-chat-engine-actor-developer` - Configures timeout per session type
 
 **Requirements**:
-* `cpt-chat-engine-nfr-backend-isolation` - Configurable timeout per session type
+* `cpt-cf-chat-engine-nfr-backend-isolation` - Configurable timeout per session type
 
 **Design Elements**:
-* `cpt-chat-engine-entity-session-type` - timeout field (INTEGER, CHECK 1-300)
-* `cpt-chat-engine-db-table-session-types` - timeout column with constraints
+* `cpt-cf-chat-engine-entity-session-type` - timeout field (INTEGER, CHECK 1-300)
+* `cpt-cf-chat-engine-db-table-session-types` - timeout column with constraints
 
 **Related ADRs**:
 * ADR-0006 (Webhook Protocol) - HTTP timeout for backend requests

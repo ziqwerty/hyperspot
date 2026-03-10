@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: superseded by ADR-0026 (CyberFabric Plugin System for Backend Integration)
 
-**ID**: `cpt-chat-engine-adr-webhook-protocol`
+**ID**: `cpt-cf-chat-engine-adr-webhook-protocol`
 
 ## Context and Problem Statement
 
@@ -49,19 +49,19 @@ Chosen option: "HTTP POST with chunked streaming", because it provides simple in
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-webhook-backend` - Receives HTTP POST, responds with streaming
+* `cpt-cf-chat-engine-actor-webhook-backend` - Receives HTTP POST, responds with streaming
 
 **Requirements**:
-* `cpt-chat-engine-fr-send-message` - Forward message to webhook with streaming response
-* `cpt-chat-engine-fr-create-session` - session.created event to webhook
-* `cpt-chat-engine-nfr-backend-isolation` - Timeout and circuit breaker per backend
-* `cpt-chat-engine-nfr-streaming` - Streaming performance requirements
+* `cpt-cf-chat-engine-fr-send-message` - Forward message to webhook with streaming response
+* `cpt-cf-chat-engine-fr-create-session` - session.created event to webhook
+* `cpt-cf-chat-engine-nfr-backend-isolation` - Timeout and circuit breaker per backend
+* `cpt-cf-chat-engine-nfr-streaming` - Streaming performance requirements
 
 **Design Elements**:
-* `cpt-chat-engine-webhook-integration` - Chat Engine's HTTP client functionality for invoking webhooks
-* `cpt-chat-engine-constraint-sync-webhooks` - Design constraint mandating synchronous protocol
-* `cpt-chat-engine-entity-session-type` - Stores webhook_url and timeout per backend
-* `cpt-chat-engine-design-context-circuit-breaker` - Circuit breaker implementation per backend
+* `cpt-cf-chat-engine-webhook-integration` - Chat Engine's HTTP client functionality for invoking webhooks
+* `cpt-cf-chat-engine-constraint-sync-webhooks` - Design constraint mandating synchronous protocol
+* `cpt-cf-chat-engine-entity-session-type` - Stores webhook_url and timeout per backend
+* `cpt-cf-chat-engine-design-context-circuit-breaker` - Circuit breaker implementation per backend
 
 **Related ADRs**:
 * ADR-0003 (Streaming Architecture) - Depends on HTTP streaming from backends

@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-message-recreation`
+**ID**: `cpt-cf-chat-engine-adr-message-recreation`
 
 ## Context and Problem Statement
 
@@ -47,15 +47,15 @@ Chosen option: "Recreation = variant (sibling), Branch = child", because it pres
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Initiates recreation or branching operations
-* `cpt-chat-engine-actor-backend-plugin` - Receives different events (message.recreate vs message.new)
+* `cpt-cf-chat-engine-actor-client` - Initiates recreation or branching operations
+* `cpt-cf-chat-engine-actor-backend-plugin` - Receives different events (message.recreate vs message.new)
 
 **Requirements**:
-* `cpt-chat-engine-fr-recreate-response` - Creates sibling with same parent_message_id
-* `cpt-chat-engine-fr-branch-message` - Creates child with specified parent_message_id
+* `cpt-cf-chat-engine-fr-recreate-response` - Creates sibling with same parent_message_id
+* `cpt-cf-chat-engine-fr-branch-message` - Creates child with specified parent_message_id
 
 **Design Elements**:
-* `cpt-chat-engine-entity-message` - variant_index for variants, parent_message_id for tree
+* `cpt-cf-chat-engine-entity-message` - variant_index for variants, parent_message_id for tree
 * Webhook event message.recreate vs message.new (Section 3.3.2 of DESIGN.md)
 * Sequence diagrams S6 (Recreate) vs S7 (Branch)
 

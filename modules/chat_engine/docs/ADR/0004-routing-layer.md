@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-routing-layer`
+**ID**: `cpt-cf-chat-engine-adr-routing-layer`
 
 ## Context and Problem Statement
 
@@ -47,18 +47,18 @@ Chosen option: "Zero business logic (pure routing)", because it decouples infras
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-backend-plugin` - Responsible for ALL message processing logic
+* `cpt-cf-chat-engine-actor-backend-plugin` - Responsible for ALL message processing logic
 
 **Design Elements**:
-* `cpt-chat-engine-webhook-integration` - Chat Engine's HTTP proxy functionality with timeout/circuit breaker
+* `cpt-cf-chat-engine-webhook-integration` - Chat Engine's HTTP proxy functionality with timeout/circuit breaker
 
 **Requirements**:
 * All functional requirements assume Chat Engine routes without processing
-* `cpt-chat-engine-nfr-response-time` - Minimal overhead from routing (< 100ms)
+* `cpt-cf-chat-engine-nfr-response-time` - Minimal overhead from routing (< 100ms)
 
-* `cpt-chat-engine-principle-zero-business-logic` - Design principle codifying this decision
-* `cpt-chat-engine-webhook-integration` - Chat Engine's HTTP client functionality for pure forwarding
-* `cpt-chat-engine-design-context-webhook-integration` - Backend responsibility scope
+* `cpt-cf-chat-engine-principle-zero-business-logic` - Design principle codifying this decision
+* `cpt-cf-chat-engine-webhook-integration` - Chat Engine's HTTP client functionality for pure forwarding
+* `cpt-cf-chat-engine-design-context-webhook-integration` - Backend responsibility scope
 
 **Related ADRs**:
 * ADR-0002 (Capability Model) - Backends define capabilities, not Chat Engine

@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-capability-model`
+**ID**: `cpt-cf-chat-engine-adr-capability-model`
 
 ## Context and Problem Statement
 
@@ -71,20 +71,20 @@ Admin configures capabilities via Chat Engine UI/API per session type with no us
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-developer` - Configures a session type by assigning a plugin; `available_capabilities` are populated automatically via `plugin.on_session_type_configured()`
-* `cpt-chat-engine-actor-client` - Selects `Session.enabled_capabilities` from the catalog; enables/disables features in UI
-* `cpt-chat-engine-actor-backend-plugin` - Receives user-selected `CapabilityValue[]` per message (see ADR-0022); does not define capabilities
+* `cpt-cf-chat-engine-actor-developer` - Configures a session type by assigning a plugin; `available_capabilities` are populated automatically via `plugin.on_session_type_configured()`
+* `cpt-cf-chat-engine-actor-client` - Selects `Session.enabled_capabilities` from the catalog; enables/disables features in UI
+* `cpt-cf-chat-engine-actor-backend-plugin` - Receives user-selected `CapabilityValue[]` per message (see ADR-0022); does not define capabilities
 
 **Requirements**:
-* `cpt-chat-engine-fr-create-session` - Session stores user-selected `enabled_capabilities`
-* `cpt-chat-engine-fr-switch-session-type` - New session type catalog replaces available capabilities
+* `cpt-cf-chat-engine-fr-create-session` - Session stores user-selected `enabled_capabilities`
+* `cpt-cf-chat-engine-fr-switch-session-type` - New session type catalog replaces available capabilities
 
 **Design Elements**:
-* `cpt-chat-engine-entity-session-type` - Includes `available_capabilities: Capability[]` (developer-configured catalog, required field)
-* `cpt-chat-engine-entity-session` - Stores `enabled_capabilities: Capability[]` (user-selected subset of the catalog)
-* `cpt-chat-engine-entity-capability` - `Capability` schema: `{id, name, description?, type, default_value, enum_values?}` — used in both tiers
-* `cpt-chat-engine-entity-capability-value` - `CapabilityValue` schema: `{id, value}` — per-message capability override (see ADR-0022)
-* `cpt-chat-engine-principle-plugin-authority` - Backend plugin declares available capabilities via `on_session_type_configured` and receives user-selected values per message
+* `cpt-cf-chat-engine-entity-session-type` - Includes `available_capabilities: Capability[]` (developer-configured catalog, required field)
+* `cpt-cf-chat-engine-entity-session` - Stores `enabled_capabilities: Capability[]` (user-selected subset of the catalog)
+* `cpt-cf-chat-engine-entity-capability` - `Capability` schema: `{id, name, description?, type, default_value, enum_values?}` — used in both tiers
+* `cpt-cf-chat-engine-entity-capability-value` - `CapabilityValue` schema: `{id, value}` — per-message capability override (see ADR-0022)
+* `cpt-cf-chat-engine-principle-plugin-authority` - Backend plugin declares available capabilities via `on_session_type_configured` and receives user-selected values per message
 
 **Related ADRs**:
 * ADR-0006 (Webhook Protocol) - Defines events using `enabled_capabilities`

@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: superseded by ADR-0026 — circuit breaker responsibility moved to plugin / webhook-adapter plugin
 
-**ID**: `cpt-chat-engine-adr-circuit-breaker`
+**ID**: `cpt-cf-chat-engine-adr-circuit-breaker`
 
 ## Context and Problem Statement
 
@@ -49,16 +49,16 @@ Chosen option: "Circuit breaker per session_type_id", because it isolates backen
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-webhook-integration` - Implements circuit breaker logic
-* `cpt-chat-engine-actor-webhook-backend` - Health monitored by circuit breaker
+* `cpt-cf-chat-engine-webhook-integration` - Implements circuit breaker logic
+* `cpt-cf-chat-engine-actor-webhook-backend` - Health monitored by circuit breaker
 
 **Requirements**:
-* `cpt-chat-engine-nfr-backend-isolation` - Backend failures must not cascade
-* `cpt-chat-engine-nfr-availability` - Chat Engine maintains availability despite backend failures
+* `cpt-cf-chat-engine-nfr-backend-isolation` - Backend failures must not cascade
+* `cpt-cf-chat-engine-nfr-availability` - Chat Engine maintains availability despite backend failures
 
 **Design Elements**:
-* `cpt-chat-engine-entity-session-type` - Timeout configuration per backend
-* `cpt-chat-engine-design-context-circuit-breaker` - Implementation details (5 failures, 30s open)
+* `cpt-cf-chat-engine-entity-session-type` - Timeout configuration per backend
+* `cpt-cf-chat-engine-design-context-circuit-breaker` - Implementation details (5 failures, 30s open)
 
 **Related ADRs**:
 * ADR-0006 (Webhook Protocol) - HTTP protocol for backend communication

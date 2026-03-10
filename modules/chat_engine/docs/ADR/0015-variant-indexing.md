@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-variant-indexing`
+**ID**: `cpt-cf-chat-engine-adr-variant-indexing`
 
 ## Context and Problem Statement
 
@@ -49,16 +49,16 @@ Chosen option: "0-based variant_index", because it provides intuitive sequential
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Requests next/previous variant, displays position
-* `cpt-chat-engine-message-processing` - Calculates variant_index for new variants
+* `cpt-cf-chat-engine-actor-client` - Requests next/previous variant, displays position
+* `cpt-cf-chat-engine-message-processing` - Calculates variant_index for new variants
 
 **Requirements**:
-* `cpt-chat-engine-fr-navigate-variants` - Query API returns position metadata
-* `cpt-chat-engine-fr-recreate-response` - New variant gets incremented index
+* `cpt-cf-chat-engine-fr-navigate-variants` - Query API returns position metadata
+* `cpt-cf-chat-engine-fr-recreate-response` - New variant gets incremented index
 
 **Design Elements**:
-* `cpt-chat-engine-entity-message` - variant_index field (INTEGER, 0-based)
-* `cpt-chat-engine-db-table-messages` - Unique constraint (session_id, parent_message_id, variant_index)
+* `cpt-cf-chat-engine-entity-message` - variant_index field (INTEGER, 0-based)
+* `cpt-cf-chat-engine-db-table-messages` - Unique constraint (session_id, parent_message_id, variant_index)
 
 **Related ADRs**:
 * ADR-0014 (Message Variants with Index and Active Flag) - variant_index is core field for variants

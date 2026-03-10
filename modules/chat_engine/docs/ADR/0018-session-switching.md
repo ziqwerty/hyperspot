@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-session-switching`
+**ID**: `cpt-cf-chat-engine-adr-session-switching`
 
 ## Context and Problem Statement
 
@@ -73,17 +73,17 @@ Confirmed when switching `session_type_id` causes the next message to be routed 
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Initiates session type switching
-* `cpt-chat-engine-actor-backend-plugin` - New plugin receives full history
-* `cpt-chat-engine-session-management` - Updates session_type_id
+* `cpt-cf-chat-engine-actor-client` - Initiates session type switching
+* `cpt-cf-chat-engine-actor-backend-plugin` - New plugin receives full history
+* `cpt-cf-chat-engine-session-management` - Updates session_type_id
 
 **Requirements**:
-* `cpt-chat-engine-fr-switch-session-type` - Switch to different backend mid-conversation
-* `cpt-chat-engine-fr-send-message` - Routing uses current session_type_id
+* `cpt-cf-chat-engine-fr-switch-session-type` - Switch to different backend mid-conversation
+* `cpt-cf-chat-engine-fr-send-message` - Routing uses current session_type_id
 
 **Design Elements**:
-* `cpt-chat-engine-entity-session` - session_type_id field (mutable)
-* `cpt-chat-engine-entity-session-type` - References `plugin_instance_id` per backend type
+* `cpt-cf-chat-engine-entity-session` - session_type_id field (mutable)
+* `cpt-cf-chat-engine-entity-session-type` - References `plugin_instance_id` per backend type
 * Sequence diagram S4 (Switch Session Type Mid-Conversation)
 
 **Related ADRs**:

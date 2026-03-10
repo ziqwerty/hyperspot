@@ -7,7 +7,7 @@ date: 2026-03-06
 
 # ADR-0027: LLM Gateway Plugin
 
-**ID**: `cpt-chat-engine-adr-llm-gateway-plugin`
+**ID**: `cpt-cf-chat-engine-adr-llm-gateway-plugin`
 
 ## Context and Problem Statement
 
@@ -163,7 +163,7 @@ GTS entity schemas registered by LLM gateway plugin (extend base Chat Engine sch
 - **PRD**: [PRD.md](../PRD.md)
 - **DESIGN**: [DESIGN.md](../DESIGN.md)
 
-* `cpt-chat-engine-fr-schema-extensibility` — GTS derived schema registration is the mechanism used to extend metadata fields
-* `cpt-chat-engine-adr-plugin-backend-integration` — plugin system and trait interface (ADR-0026)
-* `cpt-chat-engine-adr-capability-model` — capabilities for user-selectable LLM params (ADR-0002)
-* `cpt-chat-engine-adr-session-metadata` — JSONB extension point and GTS validation strategy (ADR-0020)
+* `cpt-cf-chat-engine-fr-schema-extensibility` — GTS derived schema registration is the mechanism used to extend metadata fields
+* `cpt-cf-chat-engine-adr-plugin-backend-integration` — plugin system and trait interface (ADR-0026)
+* `cpt-cf-chat-engine-adr-capability-model` — capabilities for user-selectable LLM params (ADR-0002)
+* `cpt-cf-chat-engine-adr-session-metadata` — JSONB extension point and GTS validation strategy (ADR-0020)

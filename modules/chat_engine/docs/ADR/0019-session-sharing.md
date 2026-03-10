@@ -6,7 +6,7 @@ Updated:  2026-03-06 by Constructor Tech
 
 **Status**: accepted
 
-**ID**: `cpt-chat-engine-adr-session-sharing`
+**ID**: `cpt-cf-chat-engine-adr-session-sharing`
 
 ## Context and Problem Statement
 
@@ -50,17 +50,17 @@ Chosen option: "Cryptographic share token with separate table", because it provi
 ## Related Design Elements
 
 **Actors**:
-* `cpt-chat-engine-actor-client` - Creates share token, shares URL with recipients
-* `cpt-chat-engine-actor-end-user` - Accesses shared session via token
-* `cpt-chat-engine-session-management` - Generates tokens, validates access
+* `cpt-cf-chat-engine-actor-client` - Creates share token, shares URL with recipients
+* `cpt-cf-chat-engine-actor-end-user` - Accesses shared session via token
+* `cpt-cf-chat-engine-session-management` - Generates tokens, validates access
 
 **Requirements**:
-* `cpt-chat-engine-fr-share-session` - Generate token, recipients view and branch
-* `cpt-chat-engine-usecase-share-session` - Full use case for sharing
+* `cpt-cf-chat-engine-fr-share-session` - Generate token, recipients view and branch
+* `cpt-cf-chat-engine-usecase-share-session` - Full use case for sharing
 
 **Design Elements**:
-* `cpt-chat-engine-entity-share-token` - Cryptographic token, session mapping, metadata
-* `cpt-chat-engine-db-table-share-tokens` - ShareToken table with constraints
+* `cpt-cf-chat-engine-entity-share-token` - Cryptographic token, session mapping, metadata
+* `cpt-cf-chat-engine-db-table-share-tokens` - ShareToken table with constraints
 * Sequence diagram S10 (Share Session)
 
 **Related ADRs**:

@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use crate::domain::repos::{InsertUserMessageParams, MessageRepository as _};
 use crate::domain::service::test_helpers::{inmem_db, mock_db_provider};
-use crate::infra::db::entity::attachment::{ActiveModel as AttAm, Entity as AttEntity};
+use crate::infra::db::entity::attachment::{
+    ActiveModel as AttAm, AttachmentKind, AttachmentStatus, Entity as AttEntity,
+};
 use crate::infra::db::entity::message_attachment::{ActiveModel as MaAm, Entity as MaEntity};
 
 use super::MessageRepository;
@@ -82,9 +84,9 @@ async fn insert_attachment(
     db: &Db,
     tenant_id: Uuid,
     chat_id: Uuid,
-    kind: &str,
+    kind: AttachmentKind,
     filename: &str,
-    status: &str,
+    status: AttachmentStatus,
     img_thumbnail: Option<(Vec<u8>, i32, i32)>,
 ) -> Uuid {
     let now = OffsetDateTime::now_utc();
@@ -103,8 +105,9 @@ async fn insert_attachment(
         size_bytes: Set(1024),
         storage_backend: Set("azure".to_owned()),
         provider_file_id: Set(None),
-        status: Set(status.to_owned()),
-        attachment_kind: Set(kind.to_owned()),
+        status: Set(status),
+        error_code: Set(None),
+        attachment_kind: Set(kind),
         doc_summary: Set(None),
         img_thumbnail: Set(thumb_bytes),
         img_thumbnail_width: Set(thumb_w),
@@ -116,6 +119,7 @@ async fn insert_attachment(
         last_cleanup_error: Set(None),
         cleanup_updated_at: Set(None),
         created_at: Set(now),
+        updated_at: Set(now),
         deleted_at: Set(None),
     };
     let conn = db.conn().unwrap();
@@ -139,8 +143,9 @@ async fn insert_deleted_attachment(db: &Db, tenant_id: Uuid, chat_id: Uuid) -> U
         size_bytes: Set(512),
         storage_backend: Set("azure".to_owned()),
         provider_file_id: Set(None),
-        status: Set("ready".to_owned()),
-        attachment_kind: Set("document".to_owned()),
+        status: Set(AttachmentStatus::Ready),
+        error_code: Set(None),
+        attachment_kind: Set(AttachmentKind::Document),
         doc_summary: Set(None),
         img_thumbnail: Set(None),
         img_thumbnail_width: Set(None),
@@ -152,6 +157,7 @@ async fn insert_deleted_attachment(db: &Db, tenant_id: Uuid, chat_id: Uuid) -> U
         last_cleanup_error: Set(None),
         cleanup_updated_at: Set(None),
         created_at: Set(now),
+        updated_at: Set(now),
         deleted_at: Set(Some(now)),
     };
     let conn = db.conn().unwrap();
@@ -233,9 +239,9 @@ async fn batch_single_message_single_attachment() {
         &db,
         tenant_id,
         chat_id,
-        "document",
+        AttachmentKind::Document,
         "report.pdf",
-        "ready",
+        AttachmentStatus::Ready,
         None,
     )
     .await;
@@ -270,16 +276,33 @@ async fn batch_multiple_messages_multiple_attachments() {
     let msg1 = insert_user_message(&db, tenant_id, chat_id).await;
     let msg2 = insert_user_message(&db, tenant_id, chat_id).await;
 
-    let att_a =
-        insert_attachment(&db, tenant_id, chat_id, "document", "a.pdf", "ready", None).await;
-    let att_b = insert_attachment(&db, tenant_id, chat_id, "image", "b.png", "ready", None).await;
+    let att_a = insert_attachment(
+        &db,
+        tenant_id,
+        chat_id,
+        AttachmentKind::Document,
+        "a.pdf",
+        AttachmentStatus::Ready,
+        None,
+    )
+    .await;
+    let att_b = insert_attachment(
+        &db,
+        tenant_id,
+        chat_id,
+        AttachmentKind::Image,
+        "b.png",
+        AttachmentStatus::Ready,
+        None,
+    )
+    .await;
     let att_c = insert_attachment(
         &db,
         tenant_id,
         chat_id,
-        "document",
+        AttachmentKind::Document,
         "c.txt",
-        "processing",
+        AttachmentStatus::Uploaded,
         None,
     )
     .await;
@@ -303,7 +326,7 @@ async fn batch_multiple_messages_multiple_attachments() {
     assert_eq!(map[&msg1].len(), 2);
     assert_eq!(map[&msg2].len(), 1);
     assert_eq!(map[&msg2][0].attachment_id, att_c);
-    assert_eq!(map[&msg2][0].status, "processing");
+    assert_eq!(map[&msg2][0].status, "uploaded");
 }
 
 #[tokio::test]
@@ -319,9 +342,9 @@ async fn batch_shared_attachment_across_messages() {
         &db,
         tenant_id,
         chat_id,
-        "document",
+        AttachmentKind::Document,
         "shared.pdf",
-        "ready",
+        AttachmentStatus::Ready,
         None,
     )
     .await;
@@ -362,9 +385,9 @@ async fn batch_with_img_thumbnail() {
         &db,
         tenant_id,
         chat_id,
-        "image",
+        AttachmentKind::Image,
         "photo.webp",
-        "ready",
+        AttachmentStatus::Ready,
         Some((thumb_bytes.clone(), 120, 80)),
     )
     .await;
@@ -433,9 +456,9 @@ async fn batch_cross_tenant_returns_empty() {
         &db,
         tenant_a,
         chat_id,
-        "document",
+        AttachmentKind::Document,
         "secret.pdf",
-        "ready",
+        AttachmentStatus::Ready,
         None,
     )
     .await;

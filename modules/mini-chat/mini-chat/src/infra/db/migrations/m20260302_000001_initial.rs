@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     storage_backend         VARCHAR(32) NOT NULL DEFAULT 'azure',
     provider_file_id        VARCHAR(128),
     status                  VARCHAR(16) NOT NULL,
+    error_code              VARCHAR(64),
     attachment_kind         VARCHAR(16) NOT NULL,
     doc_summary             TEXT,
     img_thumbnail           BYTEA,
@@ -147,8 +148,10 @@ CREATE TABLE IF NOT EXISTS attachments (
     last_cleanup_error      TEXT,
     cleanup_updated_at      TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL,
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at              TIMESTAMPTZ,
-    CHECK (attachment_kind IN ('document', 'image'))
+    CHECK (attachment_kind IN ('document', 'image')),
+    CHECK (status IN ('pending', 'uploaded', 'ready', 'failed'))
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_tenant_chat
     ON attachments (tenant_id, chat_id)
@@ -329,6 +332,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     storage_backend         TEXT NOT NULL DEFAULT 'azure',
     provider_file_id        TEXT,
     status                  TEXT NOT NULL,
+    error_code              TEXT,
     attachment_kind         TEXT NOT NULL,
     doc_summary             TEXT,
     img_thumbnail           BLOB,
@@ -341,8 +345,10 @@ CREATE TABLE IF NOT EXISTS attachments (
     last_cleanup_error      TEXT,
     cleanup_updated_at      TEXT,
     created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
     deleted_at              TEXT,
-    CHECK (attachment_kind IN ('document', 'image'))
+    CHECK (attachment_kind IN ('document', 'image')),
+    CHECK (status IN ('pending', 'uploaded', 'ready', 'failed'))
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_tenant_chat
     ON attachments (tenant_id, chat_id)

@@ -7,7 +7,8 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::domain::repos::{
-    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageRepository, TurnRepository,
+    ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageAttachmentRepository,
+    MessageRepository, TurnRepository,
 };
 use crate::infra::db::entity::chat_turn::{Model as TurnModel, TurnState};
 
@@ -110,22 +111,29 @@ pub struct TurnService<
     TR: TurnRepository + 'static,
     MR: MessageRepository + 'static,
     CR: ChatRepository + 'static,
+    MAR: MessageAttachmentRepository + 'static,
 > {
     pub(crate) db: Arc<DbProvider>,
     pub(crate) turn_repo: Arc<TR>,
     pub(crate) message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
+    message_attachment_repo: Arc<MAR>,
     enforcer: PolicyEnforcer,
 }
 
-impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepository + 'static>
-    TurnService<TR, MR, CR>
+impl<
+    TR: TurnRepository + 'static,
+    MR: MessageRepository + 'static,
+    CR: ChatRepository + 'static,
+    MAR: MessageAttachmentRepository + 'static,
+> TurnService<TR, MR, CR, MAR>
 {
     pub(crate) fn new(
         db: Arc<DbProvider>,
         turn_repo: Arc<TR>,
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
+        message_attachment_repo: Arc<MAR>,
         enforcer: PolicyEnforcer,
     ) -> Self {
         Self {
@@ -133,6 +141,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
             turn_repo,
             message_repo,
             chat_repo,
+            message_attachment_repo,
             enforcer,
         }
     }
@@ -275,6 +284,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
         let turn_repo = Arc::clone(&self.turn_repo);
         let message_repo = Arc::clone(&self.message_repo);
         let chat_repo = Arc::clone(&self.chat_repo);
+        let message_attachment_repo = Arc::clone(&self.message_attachment_repo);
         let scope_tx = chat_scope.clone();
         let ctx_clone = ctx.clone();
 
@@ -353,18 +363,26 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static, CR: ChatRepo
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 
                     // Insert user message for the new turn
+                    let new_msg_id = Uuid::new_v4();
                     message_repo
                         .insert_user_message(
                             tx,
                             &scope,
                             InsertUserMessageParams {
-                                id: Uuid::new_v4(),
+                                id: new_msg_id,
                                 tenant_id,
                                 chat_id,
                                 request_id: new_request_id,
                                 content: user_content.clone(),
                             },
                         )
+                        .await
+                        .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
+
+                    // Copy message_attachments from original message to new message,
+                    // excluding soft-deleted attachments (P3-8).
+                    message_attachment_repo
+                        .copy_for_retry(tx, &scope, original_msg.id, new_msg_id, chat_id)
                         .await
                         .map_err(|e| modkit_db::DbError::Other(anyhow::Error::new(e)))?;
 

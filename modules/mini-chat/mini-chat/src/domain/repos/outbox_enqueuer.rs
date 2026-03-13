@@ -1,7 +1,29 @@
 use mini_chat_sdk::UsageEvent;
 use modkit_db::secure::DBRunner;
+use modkit_macros::domain_model;
+use serde::Serialize;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+
+/// Payload for attachment cleanup outbox events.
+///
+/// Enqueued within the delete transaction so cleanup workers can
+/// remove provider-side files and vector store entries asynchronously.
+#[domain_model]
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentCleanupEvent {
+    pub event_type: String,
+    pub tenant_id: Uuid,
+    pub chat_id: Uuid,
+    pub attachment_id: Uuid,
+    pub provider_file_id: Option<String>,
+    pub vector_store_id: Option<String>,
+    pub storage_backend: String,
+    pub attachment_kind: String,
+    pub deleted_at: OffsetDateTime,
+}
 
 /// Domain-layer abstraction for enqueuing outbox events within a transaction.
 ///
@@ -48,6 +70,16 @@ pub trait OutboxEnqueuer: Send + Sync {
         &self,
         runner: &(dyn DBRunner + Sync),
         event: UsageEvent,
+    ) -> Result<(), DomainError>;
+
+    /// Enqueue an attachment cleanup event within the caller's transaction.
+    ///
+    /// Called during the delete-attachment transaction to schedule async
+    /// cleanup of provider-side resources (file deletion, vector store removal).
+    async fn enqueue_attachment_cleanup(
+        &self,
+        runner: &(dyn DBRunner + Sync),
+        event: AttachmentCleanupEvent,
     ) -> Result<(), DomainError>;
 
     /// Notify the outbox sequencer that new events are available.

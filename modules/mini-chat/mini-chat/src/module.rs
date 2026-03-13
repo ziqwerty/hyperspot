@@ -17,7 +17,7 @@ use types_registry_sdk::{RegisterResult, TypesRegistryClient};
 use crate::api::rest::routes;
 use crate::config::ProviderEntry;
 use crate::domain::service::{AppServices as GenericAppServices, Repositories};
-use crate::infra::outbox::{InfraOutboxEnqueuer, UsageEventHandler};
+use crate::infra::outbox::{AttachmentCleanupHandler, InfraOutboxEnqueuer, UsageEventHandler};
 
 pub(crate) type AppServices = GenericAppServices<
     TurnRepository,
@@ -26,9 +26,13 @@ pub(crate) type AppServices = GenericAppServices<
     ReactionRepository,
     ChatRepository,
     ThreadSummaryRepository,
+    AttachmentRepository,
+    VectorStoreRepository,
+    MessageAttachmentRepository,
 >;
 use crate::infra::db::repo::attachment_repo::AttachmentRepository;
 use crate::infra::db::repo::chat_repo::ChatRepository;
+use crate::infra::db::repo::message_attachment_repo::MessageAttachmentRepository;
 use crate::infra::db::repo::message_repo::MessageRepository;
 use crate::infra::db::repo::quota_usage_repo::QuotaUsageRepository;
 use crate::infra::db::repo::reaction_repo::ReactionRepository;
@@ -74,6 +78,7 @@ impl Default for MiniChatModule {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl Module for MiniChatModule {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
@@ -152,25 +157,31 @@ impl Module for MiniChatModule {
         let outbox_db = db.db();
         let num_partitions = cfg.outbox.num_partitions;
         let queue_name = cfg.outbox.queue_name.clone();
+        let cleanup_queue_name = cfg.outbox.cleanup_queue_name.clone();
 
-        let outbox_handle =
-            Outbox::builder(outbox_db)
-                .queue(
-                    &queue_name,
-                    Partitions::of(u16::try_from(num_partitions).map_err(|_| {
-                        anyhow::anyhow!("num_partitions {num_partitions} exceeds u16")
-                    })?),
-                )
-                .decoupled(UsageEventHandler {
-                    plugin_provider: model_policy_gw.clone(),
-                })
-                .start()
-                .await
-                .map_err(|e| anyhow::anyhow!("outbox start: {e}"))?;
+        let partitions = Partitions::of(
+            u16::try_from(num_partitions)
+                .map_err(|_| anyhow::anyhow!("num_partitions {num_partitions} exceeds u16"))?,
+        );
+
+        let outbox_handle = Outbox::builder(outbox_db)
+            .queue(&queue_name, partitions)
+            .decoupled(UsageEventHandler {
+                plugin_provider: model_policy_gw.clone(),
+            })
+            .queue(&cleanup_queue_name, partitions)
+            .decoupled(AttachmentCleanupHandler)
+            .start()
+            .await
+            .map_err(|e| anyhow::anyhow!("outbox start: {e}"))?;
 
         let outbox = Arc::clone(outbox_handle.outbox());
-        let outbox_enqueuer =
-            Arc::new(InfraOutboxEnqueuer::new(outbox, queue_name, num_partitions));
+        let outbox_enqueuer = Arc::new(InfraOutboxEnqueuer::new(
+            outbox,
+            queue_name,
+            cleanup_queue_name,
+            num_partitions,
+        ));
 
         {
             let mut guard = self
@@ -246,21 +257,97 @@ impl Module for MiniChatModule {
             reaction: Arc::new(ReactionRepository),
             thread_summary: Arc::new(ThreadSummaryRepository),
             vector_store: Arc::new(VectorStoreRepository),
+            message_attachment: Arc::new(MessageAttachmentRepository),
         };
+
+        let rag_client = Arc::new(
+            crate::infra::llm::providers::rag_http_client::RagHttpClient::new(Arc::clone(&gateway)),
+        );
+
+        // Build provider-specific file/vector store impls per provider entry.
+        // Dispatch by storage_kind: Azure → Azure impls, OpenAi → OpenAI impls.
+        let mut file_impls: std::collections::HashMap<
+            String,
+            Arc<dyn crate::domain::ports::FileStorageProvider>,
+        > = std::collections::HashMap::new();
+        let mut vs_impls: std::collections::HashMap<
+            String,
+            Arc<dyn crate::domain::ports::VectorStoreProvider>,
+        > = std::collections::HashMap::new();
+        for (provider_id, entry) in provider_resolver.entries() {
+            let (file, vs): (
+                Arc<dyn crate::domain::ports::FileStorageProvider>,
+                Arc<dyn crate::domain::ports::VectorStoreProvider>,
+            ) = match entry.storage_kind {
+                crate::config::StorageKind::Azure => {
+                    let api_version = entry.api_version.clone().unwrap_or_else(|| {
+                        panic!(
+                            "provider '{provider_id}': storage_kind is 'azure' \
+                             but api_version is not set"
+                        )
+                    });
+                    (
+                        Arc::new(
+                            crate::infra::llm::providers::azure_file_storage::AzureFileStorage::new(
+                                Arc::clone(&rag_client),
+                                Arc::clone(&provider_resolver),
+                                api_version.clone(),
+                            ),
+                        ),
+                        Arc::new(
+                            crate::infra::llm::providers::azure_vector_store::AzureVectorStore::new(
+                                Arc::clone(&rag_client),
+                                Arc::clone(&provider_resolver),
+                                api_version,
+                            ),
+                        ),
+                    )
+                }
+                crate::config::StorageKind::OpenAi => (
+                    Arc::new(
+                        crate::infra::llm::providers::openai_file_storage::OpenAiFileStorage::new(
+                            Arc::clone(&rag_client),
+                            Arc::clone(&provider_resolver),
+                        ),
+                    ),
+                    Arc::new(
+                        crate::infra::llm::providers::openai_vector_store::OpenAiVectorStore::new(
+                            Arc::clone(&rag_client),
+                            Arc::clone(&provider_resolver),
+                        ),
+                    ),
+                ),
+            };
+            file_impls.insert(provider_id.clone(), file);
+            vs_impls.insert(provider_id.clone(), vs);
+        }
+        let file_storage: Arc<dyn crate::domain::ports::FileStorageProvider> = Arc::new(
+            crate::infra::llm::providers::dispatching_storage::DispatchingFileStorage::new(
+                file_impls,
+            ),
+        );
+        let vector_store_prov: Arc<dyn crate::domain::ports::VectorStoreProvider> = Arc::new(
+            crate::infra::llm::providers::dispatching_storage::DispatchingVectorStore::new(
+                vs_impls,
+            ),
+        );
 
         let services = Arc::new(AppServices::new(
             &repos,
             db,
             authz,
             &(model_policy_gw.clone() as Arc<dyn crate::domain::repos::ModelResolver>),
-            provider_resolver,
+            &provider_resolver,
             cfg.streaming,
             model_policy_gw.clone() as Arc<dyn crate::domain::repos::PolicySnapshotProvider>,
             model_policy_gw as Arc<dyn crate::domain::repos::UserLimitsProvider>,
             cfg.estimation_budgets,
             cfg.quota,
-            outbox_enqueuer,
+            &(Arc::clone(&outbox_enqueuer) as Arc<dyn crate::domain::repos::OutboxEnqueuer>),
             cfg.context,
+            file_storage,
+            vector_store_prov,
+            cfg.rag,
         ));
 
         self.service

@@ -5,7 +5,8 @@
 //! consume these types and map them to wire formats.
 
 use modkit_macros::domain_model;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Message types
@@ -78,6 +79,49 @@ impl LlmMessage {
 // Tool types
 // ════════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════════
+// File search filter types
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Recursive metadata filter for file search. Serialization to provider wire
+/// format is handled in the infra layer only — do NOT derive `Serialize`.
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileSearchFilter {
+    /// Exact match: `key == value`.
+    Eq { key: String, value: String },
+    /// Set membership: `key IN values`.
+    In { key: String, values: Vec<String> },
+    /// Logical AND of sub-filters.
+    And(Vec<FileSearchFilter>),
+    /// Logical OR of sub-filters.
+    Or(Vec<FileSearchFilter>),
+}
+
+impl FileSearchFilter {
+    /// Convenience: filter for a single `attachment_id`.
+    #[must_use]
+    pub fn attachment_eq(id: uuid::Uuid) -> Self {
+        Self::Eq {
+            key: "attachment_id".to_owned(),
+            value: id.to_string(),
+        }
+    }
+
+    /// Convenience: filter for multiple `attachment_ids`.
+    ///
+    /// # Panics
+    /// Panics if `ids` is empty — caller must check.
+    #[must_use]
+    pub fn attachment_in(ids: &[uuid::Uuid]) -> Self {
+        assert!(!ids.is_empty(), "attachment_in called with empty ids");
+        Self::In {
+            key: "attachment_id".to_owned(),
+            values: ids.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
 /// A provider-agnostic tool descriptor.
 ///
 /// Each adapter maps supported tools to its wire format and silently drops
@@ -86,7 +130,10 @@ impl LlmMessage {
 #[derive(Debug, Clone)]
 pub enum LlmTool {
     /// Server-side file search (provider manages execution).
-    FileSearch { vector_store_ids: Vec<String> },
+    FileSearch {
+        vector_store_ids: Vec<String>,
+        filters: Option<FileSearchFilter>,
+    },
     /// Server-side web search (provider manages execution).
     WebSearch,
     /// Generic function tool (for providers supporting function calling).
@@ -95,6 +142,61 @@ pub enum LlmTool {
         description: String,
         parameters: serde_json::Value,
     },
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Response / streaming value types
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Token usage counters.
+#[domain_model]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+pub struct Usage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// A citation extracted from provider annotations.
+#[domain_model]
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct Citation {
+    pub source: CitationSource,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    pub snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<TextSpan>,
+}
+
+/// Whether a citation came from a file or web search.
+#[domain_model]
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CitationSource {
+    File,
+    Web,
+}
+
+/// A character span within response text.
+#[domain_model]
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+pub struct TextSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Lifecycle phase of a tool invocation within a stream.
+#[domain_model]
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPhase {
+    Start,
+    Done,
 }
 
 // ════════════════════════════════════════════════════════════════════════════

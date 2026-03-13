@@ -2,11 +2,11 @@ use modkit_macros::domain_model;
 use modkit_security::AccessScope;
 use uuid::Uuid;
 
+use crate::domain::llm::Usage;
 use crate::domain::model::billing_outcome::BillingDerivation;
 use crate::domain::model::quota::{SettlementMethod, SettlementOutcome, SettlementPath};
 use crate::infra::db::entity::chat_turn::TurnState;
 use crate::infra::db::entity::quota_usage::PeriodType;
-use crate::infra::llm::Usage;
 
 /// All fields needed by `finalize_turn_cas()`.
 ///

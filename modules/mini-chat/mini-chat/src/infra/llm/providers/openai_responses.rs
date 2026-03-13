@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::infra::llm::request::{ContentPart as MessageContentPart, LlmTool};
+use crate::infra::llm::request::{ContentPart as MessageContentPart, FileSearchFilter, LlmTool};
 use crate::infra::llm::{
     Citation, CitationSource, ClientSseEvent, LlmProviderError, LlmRequest, NonStreaming,
     ProviderStream, RawDetail, ResponseResult, Streaming, TerminalOutcome, TextSpan, ToolPhase,
@@ -563,10 +563,21 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
         .tools
         .iter()
         .filter_map(|tool| match tool {
-            LlmTool::FileSearch { vector_store_ids } => Some(serde_json::json!({
-                "type": "file_search",
-                "vector_store_ids": vector_store_ids
-            })),
+            LlmTool::FileSearch {
+                vector_store_ids,
+                filters,
+            } => {
+                // Responses API uses flat format (vector_store_ids at top level),
+                // NOT nested inside a "file_search" key.
+                let mut tool = serde_json::json!({
+                    "type": "file_search",
+                    "vector_store_ids": vector_store_ids
+                });
+                if let Some(f) = filters {
+                    tool["filters"] = serialize_file_search_filter(f);
+                }
+                Some(tool)
+            }
             // TODO(P2): Update "web_search_preview" to "web_search" when adding provider parameter pass-through
             LlmTool::WebSearch => Some(serde_json::json!({
                 "type": "web_search_preview"
@@ -591,6 +602,30 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
     }
 
     body
+}
+
+/// Serialize a `FileSearchFilter` to the provider's wire JSON format.
+fn serialize_file_search_filter(filter: &FileSearchFilter) -> serde_json::Value {
+    match filter {
+        FileSearchFilter::Eq { key, value } => serde_json::json!({
+            "type": "eq",
+            "key": key,
+            "value": value,
+        }),
+        FileSearchFilter::In { key, values } => serde_json::json!({
+            "type": "in",
+            "key": key,
+            "values": values,
+        }),
+        FileSearchFilter::And(filters) => serde_json::json!({
+            "type": "and",
+            "filters": filters.iter().map(serialize_file_search_filter).collect::<Vec<_>>(),
+        }),
+        FileSearchFilter::Or(filters) => serde_json::json!({
+            "type": "or",
+            "filters": filters.iter().map(serialize_file_search_filter).collect::<Vec<_>>(),
+        }),
+    }
 }
 
 /// Serialize a request body to `Body::Bytes`.
@@ -745,6 +780,9 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
             .collect::<Vec<_>>()
             .join("");
 
+        // Note: citations here contain raw provider file_ids, not mapped attachment UUIDs.
+        // The non-streaming complete() path is not used for user-facing requests; if it
+        // ever is, map_citation_ids() must be applied by the caller.
         let citations = extract_citations(&response_obj, &content);
 
         let usage = Usage {
@@ -1018,13 +1056,39 @@ mod tests {
         let request = llm_request("gpt-4o")
             .tool(LlmTool::FileSearch {
                 vector_store_ids: vec!["vs-123".into()],
+                filters: None,
             })
             .build_streaming();
 
         let body = build_request_body(&request, true);
 
         assert_eq!(body["tools"][0]["type"], "file_search");
+        // Responses API: flat format — vector_store_ids at top level, not nested
         assert_eq!(body["tools"][0]["vector_store_ids"][0], "vs-123");
+        assert!(body["tools"][0]["filters"].is_null());
+    }
+
+    #[test]
+    fn builder_file_search_tool_with_filter() {
+        let request = llm_request("gpt-4o")
+            .tool(LlmTool::FileSearch {
+                vector_store_ids: vec!["vs-123".into()],
+                filters: Some(FileSearchFilter::Eq {
+                    key: "attachment_id".into(),
+                    value: "abc-123".into(),
+                }),
+            })
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+
+        assert_eq!(body["tools"][0]["type"], "file_search");
+        // Responses API: flat format
+        let tool = &body["tools"][0];
+        assert_eq!(tool["vector_store_ids"][0], "vs-123");
+        assert_eq!(tool["filters"]["type"], "eq");
+        assert_eq!(tool["filters"]["key"], "attachment_id");
+        assert_eq!(tool["filters"]["value"], "abc-123");
     }
 
     #[test]
@@ -1044,6 +1108,7 @@ mod tests {
             .tools(vec![
                 LlmTool::FileSearch {
                     vector_store_ids: vec!["vs-123".into()],
+                    filters: None,
                 },
                 LlmTool::WebSearch,
             ])
@@ -1924,6 +1989,7 @@ mod tests {
             .tools(vec![
                 LlmTool::FileSearch {
                     vector_store_ids: vec!["vs-123".into()],
+                    filters: None,
                 },
                 LlmTool::WebSearch,
             ])
@@ -1962,5 +2028,55 @@ mod tests {
         assert_eq!(body["tools"][1]["type"], "web_search_preview");
         assert_eq!(body["metadata"]["tenant_id"], "t1");
         assert_eq!(body["metadata"]["feature"], "file_search+web_search");
+    }
+
+    // ── P5-K4: file_search wire format (Responses API = flat) ──
+
+    #[test]
+    fn file_search_wire_format_flat() {
+        let request = llm_request("gpt-4o")
+            .message(LlmMessage::user("test"))
+            .tools(vec![LlmTool::FileSearch {
+                vector_store_ids: vec!["vs-001".into(), "vs-002".into()],
+                filters: None,
+            }])
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+
+        // Responses API: flat format — vector_store_ids at top level of tool object
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "file_search");
+        assert_eq!(tool["vector_store_ids"][0], "vs-001");
+        assert_eq!(tool["vector_store_ids"][1], "vs-002");
+    }
+
+    // ── P5-K5: file_search wire format with filters ──
+
+    #[test]
+    fn file_search_wire_format_with_filters() {
+        let filter = FileSearchFilter::In {
+            key: "attachment_id".to_owned(),
+            values: vec!["uuid-a".to_owned(), "uuid-b".to_owned()],
+        };
+
+        let request = llm_request("gpt-4o")
+            .message(LlmMessage::user("test"))
+            .tools(vec![LlmTool::FileSearch {
+                vector_store_ids: vec!["vs-001".into()],
+                filters: Some(filter),
+            }])
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+        let tool = &body["tools"][0];
+
+        assert_eq!(tool["type"], "file_search");
+        // Responses API: flat format — everything at top level
+        assert_eq!(tool["vector_store_ids"][0], "vs-001");
+        assert_eq!(tool["filters"]["type"], "in");
+        assert_eq!(tool["filters"]["key"], "attachment_id");
+        assert_eq!(tool["filters"]["values"][0], "uuid-a");
+        assert_eq!(tool["filters"]["values"][1], "uuid-b");
     }
 }

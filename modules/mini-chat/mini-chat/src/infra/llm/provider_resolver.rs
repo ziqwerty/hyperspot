@@ -15,6 +15,8 @@ use oagw_sdk::ServiceGatewayClientV1;
 use super::providers::{ProviderKind, create_provider};
 use super::{LlmProvider, LlmProviderError};
 use crate::config::ProviderEntry;
+#[cfg(test)]
+use crate::config::StorageKind;
 
 /// Result of resolving a `provider_id`.
 pub struct ResolvedProvider<'a> {
@@ -109,6 +111,47 @@ impl ProviderResolver {
         })
     }
 
+    /// Derive the `storage_backend` label from a provider ID.
+    ///
+    /// Returns `ProviderEntry.storage_backend` when configured, otherwise
+    /// falls back to the `provider_id` as-is. Stored on each attachment row
+    /// so cleanup workers know which provider API to target.
+    #[must_use]
+    pub fn resolve_storage_backend(&self, provider_id: &str) -> String {
+        self.registry
+            .get(provider_id)
+            .and_then(|entry| entry.storage_backend.clone())
+            .unwrap_or_else(|| provider_id.to_owned())
+    }
+
+    /// Resolve the upstream alias for a given provider and tenant.
+    ///
+    /// Returns `None` if no upstream alias is registered for the provider.
+    #[must_use]
+    pub fn upstream_alias_for(&self, provider_id: &str, tenant_id: Option<&str>) -> Option<&str> {
+        let entry = self.registry.get(provider_id)?;
+        tenant_id
+            .and_then(|tid| {
+                entry
+                    .tenant_overrides
+                    .get(tid)
+                    .and_then(|ovr| ovr.upstream_alias.as_deref())
+            })
+            .or(entry.upstream_alias.as_deref())
+    }
+
+    /// Whether the provider supports `file_search` filters (metadata filtering).
+    ///
+    /// Azure `OpenAI` does NOT support filters — `FilteredByAttachmentIds` must
+    /// be degraded to `UnrestrictedChatSearch` for Azure providers.
+    /// Configured via `ProviderEntry.supports_file_search_filters` (default `true`).
+    #[must_use]
+    pub fn supports_file_search_filters(&self, provider_id: &str) -> bool {
+        self.registry
+            .get(provider_id)
+            .is_some_and(|entry| entry.supports_file_search_filters)
+    }
+
     /// All registered provider entries (for startup validation / logging).
     #[must_use]
     pub fn entries(&self) -> &HashMap<String, ProviderEntry> {
@@ -132,6 +175,10 @@ impl ProviderResolver {
                 api_path: "/v1/responses".to_owned(),
                 auth_plugin_type: None,
                 auth_config: None,
+                storage_backend: None,
+                supports_file_search_filters: true,
+                storage_kind: StorageKind::OpenAi,
+                api_version: None,
                 tenant_overrides: HashMap::new(),
             },
         );
@@ -255,6 +302,10 @@ mod tests {
                 api_path: "/v1/responses".to_owned(),
                 auth_plugin_type: None,
                 auth_config: None,
+                storage_backend: None,
+                supports_file_search_filters: true,
+                storage_kind: StorageKind::OpenAi,
+                api_version: None,
                 tenant_overrides: HashMap::new(),
             },
         );
@@ -267,6 +318,10 @@ mod tests {
                 api_path: "/openai/v1/responses".to_owned(),
                 auth_plugin_type: None,
                 auth_config: None,
+                storage_backend: Some("azure".to_owned()),
+                supports_file_search_filters: false,
+                storage_kind: StorageKind::Azure,
+                api_version: Some("2024-10-21".to_owned()),
                 tenant_overrides: HashMap::new(),
             },
         );
@@ -316,6 +371,10 @@ mod tests {
                 api_path: "/openai/v1/responses".to_owned(),
                 auth_plugin_type: None,
                 auth_config: None,
+                storage_backend: None,
+                supports_file_search_filters: true,
+                storage_kind: StorageKind::Azure,
+                api_version: Some("2024-10-21".to_owned()),
                 tenant_overrides: {
                     let mut t = HashMap::new();
                     t.insert(
@@ -375,5 +434,122 @@ mod tests {
         let resolver = ProviderResolver::new(&null_gw(), mock_providers_with_tenant_overrides());
         let r = resolver.resolve("azure_openai", None).unwrap();
         assert_eq!(r.upstream_alias, "default.openai.azure.com");
+    }
+
+    // ── P5-K6: Azure degrades filtered to unrestricted ──
+
+    #[test]
+    fn openai_supports_file_search_filters() {
+        let resolver = ProviderResolver::new(&null_gw(), mock_providers());
+        assert!(resolver.supports_file_search_filters("openai"));
+    }
+
+    #[test]
+    fn azure_does_not_support_file_search_filters() {
+        let resolver = ProviderResolver::new(&null_gw(), mock_providers());
+        assert!(!resolver.supports_file_search_filters("azure_openai"));
+    }
+
+    #[test]
+    fn unknown_provider_does_not_support_filters() {
+        let resolver = ProviderResolver::new(&null_gw(), mock_providers());
+        assert!(!resolver.supports_file_search_filters("nonexistent"));
+    }
+
+    // ── WS1: Config-driven resolve_storage_backend ──
+
+    #[test]
+    fn resolve_storage_backend_uses_config_field() {
+        let resolver = ProviderResolver::new(&null_gw(), mock_providers());
+        // azure_openai has storage_backend: Some("azure") in mock_providers
+        assert_eq!(resolver.resolve_storage_backend("azure_openai"), "azure");
+    }
+
+    #[test]
+    fn resolve_storage_backend_falls_back_to_provider_id() {
+        let resolver = ProviderResolver::new(&null_gw(), mock_providers());
+        // openai has storage_backend: None → falls back to "openai"
+        assert_eq!(resolver.resolve_storage_backend("openai"), "openai");
+    }
+
+    #[test]
+    fn resolve_storage_backend_unknown_provider_returns_id() {
+        let resolver = ProviderResolver::new(&null_gw(), mock_providers());
+        // Unknown provider not in registry → falls back to the provided string
+        assert_eq!(resolver.resolve_storage_backend("unknown"), "unknown");
+    }
+
+    // ── WS1: Config-driven supports_file_search_filters ──
+
+    #[test]
+    fn supports_file_search_filters_uses_config_field_not_host() {
+        // Create a provider with an Azure-like host but filters enabled
+        let mut m = HashMap::new();
+        m.insert(
+            "custom_azure".to_owned(),
+            ProviderEntry {
+                kind: ProviderKind::OpenAiResponses,
+                upstream_alias: Some("custom.azure.com".to_owned()),
+                host: "custom.azure.com".to_owned(),
+                api_path: "/v1/responses".to_owned(),
+                auth_plugin_type: None,
+                auth_config: None,
+                storage_backend: None,
+                supports_file_search_filters: true,
+                storage_kind: StorageKind::Azure,
+                api_version: Some("2024-10-21".to_owned()),
+                tenant_overrides: HashMap::new(),
+            },
+        );
+        let resolver = ProviderResolver::new(&null_gw(), m);
+        // Despite .azure.com host, config says true
+        assert!(resolver.supports_file_search_filters("custom_azure"));
+    }
+
+    // ── WS1: Deserialization backward compatibility ──
+
+    #[test]
+    fn provider_entry_deserialize_omitted_fields_default_correctly() {
+        let json = serde_json::json!({
+            "kind": "openai_responses",
+            "storage_kind": "openai",
+            "host": "api.openai.com",
+            "api_path": "/v1/responses"
+        });
+        let entry: ProviderEntry = serde_json::from_value(json).unwrap();
+        assert!(entry.storage_backend.is_none());
+        assert!(entry.supports_file_search_filters);
+        assert_eq!(entry.storage_kind, StorageKind::OpenAi);
+    }
+
+    #[test]
+    fn provider_entry_deserialize_explicit_values() {
+        let json = serde_json::json!({
+            "kind": "openai_responses",
+            "storage_kind": "azure",
+            "host": "my-azure.openai.azure.com",
+            "api_path": "/v1/responses",
+            "storage_backend": "azure",
+            "supports_file_search_filters": false
+        });
+        let entry: ProviderEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(entry.storage_backend.as_deref(), Some("azure"));
+        assert!(!entry.supports_file_search_filters);
+        assert_eq!(entry.storage_kind, StorageKind::Azure);
+    }
+
+    #[test]
+    fn provider_entry_deserialize_missing_storage_kind_rejected() {
+        let json = serde_json::json!({
+            "kind": "openai_responses",
+            "host": "api.openai.com"
+        });
+        let result: Result<ProviderEntry, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "missing storage_kind should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("storage_kind"),
+            "error should mention storage_kind: {err}"
+        );
     }
 }

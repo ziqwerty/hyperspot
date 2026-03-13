@@ -1241,6 +1241,7 @@ mod tests {
         let request = llm_request("gpt-4o")
             .tool(LlmTool::FileSearch {
                 vector_store_ids: vec!["vs-1".into()],
+                filters: None,
             })
             .message(LlmMessage::user("Hi"))
             .build_streaming();

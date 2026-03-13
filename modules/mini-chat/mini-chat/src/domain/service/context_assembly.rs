@@ -5,7 +5,27 @@
 
 use modkit_macros::domain_model;
 
-use crate::domain::llm::{ContextMessage, LlmMessage, LlmTool, Role};
+use crate::config::EstimationBudgets;
+use crate::domain::llm::{ContextMessage, FileSearchFilter, LlmMessage, LlmTool, Role};
+
+/// Token budget parameters for context truncation.
+///
+/// When present, `assemble_context` applies priority-based truncation to
+/// fit the assembled context within the available token budget.
+#[domain_model]
+#[derive(Debug, Clone)]
+pub struct TokenBudget {
+    /// Total context window of the effective model (tokens).
+    pub context_window: u32,
+    /// Max output tokens applied after preflight (reserved for generation).
+    pub max_output_tokens_applied: i32,
+    /// Per-model estimation budgets (bytes-per-token, surcharges, etc.).
+    pub budgets: EstimationBudgets,
+    /// Whether `file_search` tool is enabled (contributes tool surcharge).
+    pub tools_enabled: bool,
+    /// Whether `web_search` is enabled (contributes web search surcharge).
+    pub web_search_enabled: bool,
+}
 
 /// All inputs needed to assemble the LLM request context.
 #[domain_model]
@@ -28,6 +48,10 @@ pub struct ContextInput<'a> {
     pub file_search_enabled: bool,
     /// Vector store IDs for `file_search` (empty = no `file_search` tool).
     pub vector_store_ids: &'a [String],
+    /// Optional metadata filter for file search (e.g. filter by `attachment_ids`).
+    pub file_search_filters: Option<FileSearchFilter>,
+    /// Token budget for context truncation. `None` = no truncation.
+    pub token_budget: Option<TokenBudget>,
 }
 
 /// Output of context assembly — ready to feed into `LlmRequestBuilder`.
@@ -41,15 +65,90 @@ pub struct AssembledContext {
     pub tools: Vec<LlmTool>,
 }
 
+/// Error during context assembly.
+#[domain_model]
+#[derive(Debug)]
+pub enum ContextAssemblyError {
+    /// Mandatory items (system instructions + current user message) exceed
+    /// the available token budget.
+    BudgetExceeded {
+        required_tokens: u64,
+        available_tokens: u64,
+    },
+}
+
+impl std::fmt::Display for ContextAssemblyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BudgetExceeded {
+                required_tokens,
+                available_tokens,
+            } => write!(
+                f,
+                "mandatory context items require {required_tokens} tokens but only {available_tokens} are available"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ContextAssemblyError {}
+
+/// Compute the available input token budget after deducting output reservation
+/// and tool surcharges.
+///
+/// Returns `Err(BudgetExceeded)` if the budget is zero or negative.
+pub fn compute_available_budget(budget: &TokenBudget) -> Result<u64, ContextAssemblyError> {
+    let tool_surcharge = if budget.tools_enabled {
+        u64::from(budget.budgets.tool_surcharge_tokens)
+    } else {
+        0
+    } + if budget.web_search_enabled {
+        u64::from(budget.budgets.web_search_surcharge_tokens)
+    } else {
+        0
+    };
+
+    #[allow(clippy::cast_sign_loss)]
+    let deductions = budget.max_output_tokens_applied as u64
+        + tool_surcharge
+        + u64::from(budget.budgets.fixed_overhead_tokens);
+
+    let context_window = u64::from(budget.context_window);
+    if deductions >= context_window {
+        return Err(ContextAssemblyError::BudgetExceeded {
+            required_tokens: deductions,
+            available_tokens: context_window,
+        });
+    }
+
+    Ok(context_window - deductions)
+}
+
+/// Estimate token count for a text item.
+///
+/// Uses the conservative bytes-per-token ratio with safety margin and
+/// per-item fixed overhead. No image handling, no tool surcharges.
+#[must_use]
+pub fn estimate_item_tokens(text_bytes: u64, budgets: &EstimationBudgets) -> u64 {
+    let bpt = u64::from(budgets.bytes_per_token_conservative.max(1));
+    let base = text_bytes.div_ceil(bpt) + u64::from(budgets.fixed_overhead_tokens);
+    #[allow(clippy::integer_division)]
+    {
+        base * (100 + u64::from(budgets.safety_margin_pct)) / 100
+    }
+}
+
 /// Assemble the LLM request context from gathered domain inputs.
 ///
-/// Normative order:
-/// 1. System prompt + tool guards → `system_instructions`
-/// 2. Thread summary (as user message with prefix) → first message
-/// 3. Recent messages (role-mapped) → middle messages
-/// 4. Current user message → last message
-#[must_use]
-pub fn assemble_context(input: &ContextInput<'_>) -> AssembledContext {
+/// When `token_budget` is `Some`, applies priority-based truncation:
+/// - P1 (system instructions) and P2 (current user message) are mandatory
+/// - P3 (thread summary) is dropped if it doesn't fit
+/// - P4 (recent messages) are dropped oldest-first
+///
+/// When `token_budget` is `None`, all items are included without truncation.
+pub fn assemble_context(
+    input: &ContextInput<'_>,
+) -> Result<AssembledContext, ContextAssemblyError> {
     // ── System instructions ──
     let system_instructions = build_system_instructions(
         input.system_prompt,
@@ -59,43 +158,115 @@ pub fn assemble_context(input: &ContextInput<'_>) -> AssembledContext {
         input.file_search_guard,
     );
 
-    // ── Messages ──
-    let mut messages = Vec::new();
-
-    // Thread summary as first message (if present)
-    if let Some(summary) = input.thread_summary {
-        messages.push(LlmMessage::user(format!("[Thread Summary]\n{summary}")));
-    }
-
-    // Recent messages (role-mapped)
-    for msg in input.recent_messages {
-        match msg.role {
-            Role::User => messages.push(LlmMessage::user(&msg.content)),
-            Role::Assistant => messages.push(LlmMessage::assistant(&msg.content)),
-            Role::System => {
-                // System messages are not included in context assembly.
-            }
-        }
-    }
-
-    // Current user message (always last)
-    messages.push(LlmMessage::user(input.user_message));
-
     // ── Tools ──
     let mut tools = Vec::new();
     if input.file_search_enabled && !input.vector_store_ids.is_empty() {
         tools.push(LlmTool::FileSearch {
             vector_store_ids: input.vector_store_ids.to_vec(),
+            filters: input.file_search_filters.clone(),
         });
     }
     if input.web_search_enabled {
         tools.push(LlmTool::WebSearch);
     }
 
-    AssembledContext {
-        system_instructions,
-        messages,
-        tools,
+    // ── Truncation ──
+    if let Some(ref budget) = input.token_budget {
+        let available = compute_available_budget(budget)?;
+        let budgets = &budget.budgets;
+
+        // P1: System instructions (mandatory)
+        let sys_tokens = system_instructions
+            .as_ref()
+            .map_or(0, |s| estimate_item_tokens(s.len() as u64, budgets));
+
+        // P2: Current user message (mandatory)
+        let user_tokens = estimate_item_tokens(input.user_message.len() as u64, budgets);
+
+        let mandatory = sys_tokens + user_tokens;
+        if mandatory > available {
+            return Err(ContextAssemblyError::BudgetExceeded {
+                required_tokens: mandatory,
+                available_tokens: available,
+            });
+        }
+
+        let mut remaining = available - mandatory;
+
+        // P3: Thread summary (droppable)
+        let keep_summary = if let Some(summary) = input.thread_summary {
+            let cost =
+                estimate_item_tokens((summary.len() + "[Thread Summary]\n".len()) as u64, budgets);
+            if cost <= remaining {
+                remaining -= cost;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        // P4: Recent messages — iterate newest→oldest, keep while they fit
+        let mut keep_from_index = input.recent_messages.len();
+        for (i, msg) in input.recent_messages.iter().enumerate().rev() {
+            if matches!(msg.role, Role::System) {
+                continue; // system messages are skipped in output
+            }
+            let cost = estimate_item_tokens(msg.content.len() as u64, budgets);
+            if cost <= remaining {
+                remaining -= cost;
+                keep_from_index = i;
+            } else {
+                break;
+            }
+        }
+
+        // ── Build messages in chronological order ──
+        let mut messages = Vec::new();
+
+        if keep_summary && let Some(summary) = input.thread_summary {
+            messages.push(LlmMessage::user(format!("[Thread Summary]\n{summary}")));
+        }
+
+        for msg in &input.recent_messages[keep_from_index..] {
+            match msg.role {
+                Role::User => messages.push(LlmMessage::user(&msg.content)),
+                Role::Assistant => messages.push(LlmMessage::assistant(&msg.content)),
+                Role::System => {}
+            }
+        }
+
+        messages.push(LlmMessage::user(input.user_message));
+
+        Ok(AssembledContext {
+            system_instructions,
+            messages,
+            tools,
+        })
+    } else {
+        // No budget — include everything without truncation.
+        let mut messages = Vec::new();
+
+        if let Some(summary) = input.thread_summary {
+            messages.push(LlmMessage::user(format!("[Thread Summary]\n{summary}")));
+        }
+
+        for msg in input.recent_messages {
+            match msg.role {
+                Role::User => messages.push(LlmMessage::user(&msg.content)),
+                Role::Assistant => messages.push(LlmMessage::assistant(&msg.content)),
+                Role::System => {}
+            }
+        }
+
+        messages.push(LlmMessage::user(input.user_message));
+
+        Ok(AssembledContext {
+            system_instructions,
+            messages,
+            tools,
+        })
     }
 }
 
@@ -151,7 +322,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         assert!(result.system_instructions.is_none());
         assert!(result.tools.is_empty());
         assert_eq!(result.messages.len(), 1);
@@ -170,7 +344,10 @@ mod tests {
             web_search_enabled: true,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         let instructions = result.system_instructions.unwrap();
         assert!(instructions.contains("You are helpful."));
         assert!(instructions.contains("Use web_search only if needed."));
@@ -189,7 +366,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: true,
             vector_store_ids: &["vs-1".to_owned()],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         let instructions = result.system_instructions.unwrap();
         assert!(instructions.contains("You are helpful."));
         assert!(instructions.contains("Use file_search for documents."));
@@ -208,7 +388,10 @@ mod tests {
             web_search_enabled: true,
             file_search_enabled: true,
             vector_store_ids: &["vs-1".to_owned()],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         let instructions = result.system_instructions.unwrap();
         assert!(instructions.contains("Base prompt."));
         assert!(instructions.contains("web guard"));
@@ -229,7 +412,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         // First message should be the thread summary
         assert_eq!(result.messages.len(), 3); // summary + recent + current
         let first_content = &result.messages[0].content;
@@ -261,7 +447,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         assert_eq!(result.messages.len(), 3); // 2 recent + current
     }
 
@@ -283,7 +472,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         // system message skipped: 2 recent (user+assistant) + 1 current = 3
         assert_eq!(result.messages.len(), 3);
     }
@@ -302,7 +494,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         let last = result.messages.last().unwrap();
         match &last.content[0] {
             crate::domain::llm::ContentPart::Text { text } => {
@@ -328,7 +523,10 @@ mod tests {
             web_search_enabled: true,
             file_search_enabled: true,
             vector_store_ids: &["vs-123".to_owned()],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         assert_eq!(result.tools.len(), 2);
         assert!(matches!(&result.tools[0], LlmTool::FileSearch { .. }));
         assert!(matches!(&result.tools[1], LlmTool::WebSearch));
@@ -344,7 +542,10 @@ mod tests {
             web_search_enabled: false,
             file_search_enabled: true,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         assert!(result.tools.is_empty());
 
         // Only web_search
@@ -358,8 +559,263 @@ mod tests {
             web_search_enabled: true,
             file_search_enabled: false,
             vector_store_ids: &[],
-        });
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
         assert_eq!(result.tools.len(), 1);
         assert!(matches!(&result.tools[0], LlmTool::WebSearch));
+    }
+
+    // ── Helper: default budgets for truncation tests ──
+
+    fn test_budgets() -> EstimationBudgets {
+        EstimationBudgets {
+            bytes_per_token_conservative: 4,
+            fixed_overhead_tokens: 100,
+            safety_margin_pct: 10,
+            image_token_budget: 1000,
+            tool_surcharge_tokens: 500,
+            web_search_surcharge_tokens: 500,
+            minimal_generation_floor: 128,
+        }
+    }
+
+    fn test_budget(context_window: u32, max_output: i32) -> TokenBudget {
+        TokenBudget {
+            context_window,
+            max_output_tokens_applied: max_output,
+            budgets: test_budgets(),
+            tools_enabled: false,
+            web_search_enabled: false,
+        }
+    }
+
+    // 5.15: budget computation with no tools
+    #[test]
+    fn budget_no_tools() {
+        let budget = test_budget(128_000, 4096);
+        // available = 128_000 - 4096 - 0 (no tools) - 100 (fixed overhead)
+        let available = compute_available_budget(&budget).unwrap();
+        assert_eq!(available, 128_000 - 4096 - 100);
+    }
+
+    // 5.16: budget computation with file_search and web_search
+    #[test]
+    fn budget_with_tools() {
+        let budget = TokenBudget {
+            context_window: 128_000,
+            max_output_tokens_applied: 4096,
+            budgets: test_budgets(),
+            tools_enabled: true,
+            web_search_enabled: true,
+        };
+        // available = 128_000 - 4096 - 500 (tool) - 500 (web) - 100 (overhead)
+        let available = compute_available_budget(&budget).unwrap();
+        assert_eq!(available, 128_000 - 4096 - 500 - 500 - 100);
+    }
+
+    // 5.17: budget computation with zero context_window
+    #[test]
+    fn budget_zero_context_window() {
+        let budget = test_budget(0, 4096);
+        let result = compute_available_budget(&budget);
+        assert!(matches!(
+            result,
+            Err(ContextAssemblyError::BudgetExceeded { .. })
+        ));
+    }
+
+    // 5.18: per-item estimation — verify bytes-per-token heuristic with margin
+    #[test]
+    fn item_estimation() {
+        let budgets = test_budgets();
+        // 400 bytes / 4 bpt = 100 tokens + 100 overhead = 200 base
+        // 200 * (100 + 10) / 100 = 220
+        assert_eq!(estimate_item_tokens(400, &budgets), 220);
+
+        // 0 bytes: 0/4 = 0 + 100 = 100 base → 100 * 110 / 100 = 110
+        assert_eq!(estimate_item_tokens(0, &budgets), 110);
+
+        // 1 byte: ceil(1/4) = 1 + 100 = 101 → 101 * 110 / 100 = 111 (int div)
+        assert_eq!(estimate_item_tokens(1, &budgets), 111);
+    }
+
+    // 5.19: truncation drops thread summary (P3) when budget tight
+    #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn truncation_drops_thread_summary() {
+        // Budget just enough for system + user message but not summary
+        let budgets = test_budgets();
+        let sys_cost = estimate_item_tokens(10, &budgets); // small system prompt
+        let user_cost = estimate_item_tokens(5, &budgets); // small user message
+        // Set context_window so available = mandatory + 1 (not enough for summary)
+        let overhead = 4096 + 100; // max_output + fixed_overhead
+        let context_window = (overhead as u64 + sys_cost + user_cost + 1) as u32;
+
+        let result = assemble_context(&ContextInput {
+            system_prompt: "0123456789", // 10 bytes
+            web_search_guard: "",
+            file_search_guard: "",
+            thread_summary: Some("A very long summary that should be dropped"),
+            recent_messages: &[],
+            user_message: "hello", // 5 bytes
+            web_search_enabled: false,
+            file_search_enabled: false,
+            vector_store_ids: &[],
+            file_search_filters: None,
+            token_budget: Some(test_budget(context_window, 4096)),
+        })
+        .unwrap();
+
+        // Only the current user message should remain (summary dropped)
+        assert_eq!(result.messages.len(), 1);
+    }
+
+    // 5.20: truncation drops oldest recent messages (P4) when budget tight
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn truncation_drops_oldest_messages() {
+        let budgets = test_budgets();
+        // Each message: "msg" = 3 bytes → estimate_item_tokens(3, budgets) = ceil(3/4)+100 = 101 → 101*110/100 = 111
+        let msg_cost = estimate_item_tokens(3, &budgets);
+        let user_cost = estimate_item_tokens(5, &budgets);
+        // Budget for mandatory + exactly 1 message
+        let overhead = 4096u64 + 100;
+        let context_window = (overhead + user_cost + msg_cost) as u32;
+
+        let recent = vec![
+            make_message(Role::User, "msg"),      // oldest — should be dropped
+            make_message(Role::Assistant, "msg"), // newer — should be kept
+        ];
+
+        let result = assemble_context(&ContextInput {
+            system_prompt: "",
+            web_search_guard: "",
+            file_search_guard: "",
+            thread_summary: None,
+            recent_messages: &recent,
+            user_message: "hello",
+            web_search_enabled: false,
+            file_search_enabled: false,
+            vector_store_ids: &[],
+            file_search_filters: None,
+            token_budget: Some(test_budget(context_window, 4096)),
+        })
+        .unwrap();
+
+        // 1 kept recent message + 1 current user message = 2
+        assert_eq!(result.messages.len(), 2);
+    }
+
+    // 5.21: truncation drops thread summary (P3) when it doesn't fit
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn truncation_drops_summary_keeps_messages() {
+        let budgets = test_budgets();
+        let msg_cost = estimate_item_tokens(3, &budgets);
+        let user_cost = estimate_item_tokens(5, &budgets);
+        // Make summary expensive enough that it won't fit alongside 2 messages
+        let big_summary = "X".repeat(2000);
+        let summary_cost = estimate_item_tokens(
+            (big_summary.len() + "[Thread Summary]\n".len()) as u64,
+            &budgets,
+        );
+        // Budget: mandatory + 2 messages, but NOT enough for summary
+        let overhead = 4096u64 + 100;
+        let context_window = (overhead + user_cost + 2 * msg_cost) as u32;
+        // Verify summary truly doesn't fit
+        assert!(
+            summary_cost > 2 * msg_cost,
+            "summary should be more expensive than 2 messages for this test"
+        );
+
+        let recent = vec![
+            make_message(Role::User, "msg"),
+            make_message(Role::Assistant, "msg"),
+        ];
+
+        let result = assemble_context(&ContextInput {
+            system_prompt: "",
+            web_search_guard: "",
+            file_search_guard: "",
+            thread_summary: Some(&big_summary),
+            recent_messages: &recent,
+            user_message: "hello",
+            web_search_enabled: false,
+            file_search_enabled: false,
+            vector_store_ids: &[],
+            file_search_filters: None,
+            token_budget: Some(test_budget(context_window, 4096)),
+        })
+        .unwrap();
+
+        // 2 recent + 1 current = 3 (summary dropped)
+        assert_eq!(result.messages.len(), 3);
+    }
+
+    // 5.22: BudgetExceeded when mandatory items exceed budget
+    #[test]
+    fn budget_exceeded_mandatory_too_large() {
+        // Context window so small that even system + user message don't fit
+        let result = assemble_context(&ContextInput {
+            system_prompt: "A".repeat(100_000).as_str(),
+            web_search_guard: "",
+            file_search_guard: "",
+            thread_summary: None,
+            recent_messages: &[],
+            user_message: "hello",
+            web_search_enabled: false,
+            file_search_enabled: false,
+            vector_store_ids: &[],
+            file_search_filters: None,
+            token_budget: Some(test_budget(5000, 4096)),
+        });
+
+        assert!(matches!(
+            result,
+            Err(ContextAssemblyError::BudgetExceeded { .. })
+        ));
+    }
+
+    // 5.23: token_budget: None skips truncation entirely — all items included
+    #[test]
+    fn no_budget_includes_everything() {
+        let recent = vec![
+            make_message(Role::User, "A".repeat(50_000).as_str()),
+            make_message(Role::Assistant, "B".repeat(50_000).as_str()),
+        ];
+
+        let result = assemble_context(&ContextInput {
+            system_prompt: "sys",
+            web_search_guard: "",
+            file_search_guard: "",
+            thread_summary: Some("summary"),
+            recent_messages: &recent,
+            user_message: "hello",
+            web_search_enabled: false,
+            file_search_enabled: false,
+            vector_store_ids: &[],
+            file_search_filters: None,
+            token_budget: None,
+        })
+        .unwrap();
+
+        // summary + 2 recent + current = 4
+        assert_eq!(result.messages.len(), 4);
+    }
+
+    // 5.24: ContextBudgetExceeded maps to HTTP 422
+    // (Tested at integration level via stream_error_to_response in turns.rs;
+    //  here we verify the error type and message.)
+    #[test]
+    fn budget_exceeded_error_message() {
+        let err = ContextAssemblyError::BudgetExceeded {
+            required_tokens: 50_000,
+            available_tokens: 10_000,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("50000"));
+        assert!(msg.contains("10000"));
     }
 }

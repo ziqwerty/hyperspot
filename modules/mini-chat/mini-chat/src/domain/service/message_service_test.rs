@@ -18,7 +18,9 @@ use crate::domain::service::test_helpers::{
     MockThreadSummaryRepo, inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver,
     mock_thread_summary_repo, test_security_ctx, test_security_ctx_with_id,
 };
-use crate::infra::db::entity::attachment::{ActiveModel as AttAm, Entity as AttEntity};
+use crate::infra::db::entity::attachment::{
+    ActiveModel as AttAm, AttachmentKind, AttachmentStatus, Entity as AttEntity,
+};
 use crate::infra::db::entity::message_attachment::{ActiveModel as MaAm, Entity as MaEntity};
 use crate::infra::db::repo::chat_repo::ChatRepository as OrmChatRepository;
 use crate::infra::db::repo::message_repo::MessageRepository as OrmMessageRepository;
@@ -512,9 +514,9 @@ async fn insert_attachment(
     db_provider: &Arc<crate::domain::service::DbProvider>,
     tenant_id: Uuid,
     chat_id: Uuid,
-    kind: &str,
+    kind: AttachmentKind,
     filename: &str,
-    status: &str,
+    status: AttachmentStatus,
     img_thumbnail: Option<(Vec<u8>, i32, i32)>,
 ) -> Uuid {
     let now = OffsetDateTime::now_utc();
@@ -533,8 +535,9 @@ async fn insert_attachment(
         size_bytes: Set(1024),
         storage_backend: Set("azure".to_owned()),
         provider_file_id: Set(None),
-        status: Set(status.to_owned()),
-        attachment_kind: Set(kind.to_owned()),
+        status: Set(status),
+        error_code: Set(None),
+        attachment_kind: Set(kind),
         doc_summary: Set(None),
         img_thumbnail: Set(thumb_bytes),
         img_thumbnail_width: Set(thumb_w),
@@ -546,6 +549,7 @@ async fn insert_attachment(
         last_cleanup_error: Set(None),
         cleanup_updated_at: Set(None),
         created_at: Set(now),
+        updated_at: Set(now),
         deleted_at: Set(None),
     };
     let conn = db_provider.conn().expect("conn");
@@ -630,9 +634,9 @@ async fn list_messages_returns_attachments() {
         &db_provider,
         tenant_id,
         chat.id,
-        "document",
+        AttachmentKind::Document,
         "report.pdf",
-        "ready",
+        AttachmentStatus::Ready,
         None,
     )
     .await;
@@ -640,9 +644,9 @@ async fn list_messages_returns_attachments() {
         &db_provider,
         tenant_id,
         chat.id,
-        "image",
+        AttachmentKind::Image,
         "photo.webp",
-        "ready",
+        AttachmentStatus::Ready,
         Some((vec![0xFF, 0xD8], 120, 80)),
     )
     .await;
@@ -794,9 +798,9 @@ async fn list_messages_mixed_messages_with_and_without_attachments() {
         &db_provider,
         tenant_id,
         chat.id,
-        "document",
+        AttachmentKind::Document,
         "notes.txt",
-        "ready",
+        AttachmentStatus::Ready,
         None,
     )
     .await;

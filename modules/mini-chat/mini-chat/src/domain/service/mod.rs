@@ -5,11 +5,12 @@ use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
 use modkit_db::DBProvider;
 use modkit_macros::domain_model;
 
-use crate::config::{ContextConfig, EstimationBudgets, QuotaConfig, StreamingConfig};
+use crate::config::{ContextConfig, EstimationBudgets, QuotaConfig, RagConfig, StreamingConfig};
 use crate::domain::repos::{
-    AttachmentRepository, ChatRepository, MessageRepository, ModelResolver, OutboxEnqueuer,
-    PolicySnapshotProvider, QuotaUsageRepository, ReactionRepository, ThreadSummaryRepository,
-    TurnRepository, UserLimitsProvider, VectorStoreRepository,
+    AttachmentRepository, ChatRepository, MessageAttachmentRepository, MessageRepository,
+    ModelResolver, OutboxEnqueuer, PolicySnapshotProvider, QuotaUsageRepository,
+    ReactionRepository, ThreadSummaryRepository, TurnRepository, UserLimitsProvider,
+    VectorStoreRepository,
 };
 use crate::domain::service::quota_settler::QuotaSettler;
 use crate::infra::llm::provider_resolver::ProviderResolver;
@@ -83,6 +84,7 @@ pub(crate) mod actions {
     pub const DELETE_TURN: &str = "delete_turn";
     pub const UPLOAD_ATTACHMENT: &str = "upload_attachment";
     pub const READ_ATTACHMENT: &str = "read_attachment";
+    pub const DELETE_ATTACHMENT: &str = "delete_attachment";
     pub const SET_REACTION: &str = "set_reaction";
     pub const DELETE_REACTION: &str = "delete_reaction";
 }
@@ -96,15 +98,19 @@ pub(crate) struct Repositories<
     RR: ReactionRepository,
     CR: ChatRepository,
     TSR: ThreadSummaryRepository,
+    AR: AttachmentRepository,
+    VSR: VectorStoreRepository,
+    MAR: MessageAttachmentRepository,
 > {
     pub(crate) chat: Arc<CR>,
-    pub(crate) attachment: Arc<dyn AttachmentRepository>,
+    pub(crate) attachment: Arc<AR>,
     pub(crate) message: Arc<MR>,
     pub(crate) quota: Arc<QR>,
     pub(crate) turn: Arc<TR>,
     pub(crate) reaction: Arc<RR>,
     pub(crate) thread_summary: Arc<TSR>,
-    pub(crate) vector_store: Arc<dyn VectorStoreRepository>,
+    pub(crate) vector_store: Arc<VSR>,
+    pub(crate) message_attachment: Arc<MAR>,
 }
 
 /// DI container — aggregates all domain services.
@@ -121,13 +127,16 @@ pub(crate) struct AppServices<
     RR: ReactionRepository + 'static,
     CR: ChatRepository + 'static,
     TSR: ThreadSummaryRepository + 'static,
+    AR: AttachmentRepository + 'static,
+    VSR: VectorStoreRepository + 'static,
+    MAR: MessageAttachmentRepository + 'static,
 > {
     pub(crate) chats: ChatService<CR, TSR>,
     pub(crate) messages: MessageService<MR, CR, RR>,
-    pub(crate) stream: StreamService<TR, MR, QR, CR, TSR>,
-    pub(crate) turns: TurnService<TR, MR, CR>,
+    pub(crate) stream: StreamService<TR, MR, QR, CR, TSR, AR, VSR, MAR>,
+    pub(crate) turns: TurnService<TR, MR, CR, MAR>,
     pub(crate) reactions: ReactionService<RR, MR, CR>,
-    pub(crate) attachments: AttachmentService<CR>,
+    pub(crate) attachments: AttachmentService<CR, AR, VSR>,
     pub(crate) models: ModelService,
     pub(crate) quota: Arc<QuotaService<QR>>,
     pub(crate) finalization: Arc<FinalizationService<TR, MR>>,
@@ -144,22 +153,28 @@ impl<
     RR: ReactionRepository + 'static,
     CR: ChatRepository + 'static,
     TSR: ThreadSummaryRepository + 'static,
-> AppServices<TR, MR, QR, RR, CR, TSR>
+    AR: AttachmentRepository + 'static,
+    VSR: VectorStoreRepository + 'static,
+    MAR: MessageAttachmentRepository + 'static,
+> AppServices<TR, MR, QR, RR, CR, TSR, AR, VSR, MAR>
 {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub(crate) fn new(
-        repos: &Repositories<TR, MR, QR, RR, CR, TSR>,
+        repos: &Repositories<TR, MR, QR, RR, CR, TSR, AR, VSR, MAR>,
         db: Arc<DbProvider>,
         authz: Arc<dyn AuthZResolverClient>,
         model_resolver: &Arc<dyn ModelResolver>,
-        provider_resolver: Arc<ProviderResolver>,
+        provider_resolver: &Arc<ProviderResolver>,
         streaming_config: StreamingConfig,
         policy_provider: Arc<dyn PolicySnapshotProvider>,
         limits_provider: Arc<dyn UserLimitsProvider>,
         estimation_budgets: EstimationBudgets,
         quota_config: QuotaConfig,
-        outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
+        outbox_enqueuer: &Arc<dyn OutboxEnqueuer>,
         context_config: ContextConfig,
+        file_storage: Arc<dyn crate::domain::ports::FileStorageProvider>,
+        vector_store_provider: Arc<dyn crate::domain::ports::VectorStoreProvider>,
+        rag_config: RagConfig,
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
 
@@ -179,7 +194,7 @@ impl<
             Arc::clone(&repos.turn),
             Arc::clone(&repos.message),
             Arc::clone(&quota_svc) as Arc<dyn QuotaSettler>,
-            outbox_enqueuer,
+            Arc::clone(outbox_enqueuer),
         ));
 
         let turns = TurnService::new(
@@ -187,6 +202,7 @@ impl<
             Arc::clone(&repos.turn),
             Arc::clone(&repos.message),
             Arc::clone(&repos.chat),
+            Arc::clone(&repos.message_attachment),
             enforcer.clone(),
         );
 
@@ -211,11 +227,14 @@ impl<
                 Arc::clone(&repos.message),
                 Arc::clone(&repos.chat),
                 enforcer.clone(),
-                provider_resolver,
+                Arc::clone(provider_resolver),
                 streaming_config,
                 Arc::clone(&finalization),
                 Arc::clone(&quota_svc),
                 Arc::clone(&repos.thread_summary),
+                Arc::clone(&repos.attachment),
+                Arc::clone(&repos.vector_store),
+                Arc::clone(&repos.message_attachment),
                 context_config,
             ),
             turns,
@@ -231,7 +250,13 @@ impl<
                 Arc::clone(&repos.attachment),
                 Arc::clone(&repos.chat),
                 Arc::clone(&repos.vector_store),
+                Arc::clone(outbox_enqueuer),
                 enforcer.clone(),
+                file_storage,
+                vector_store_provider,
+                Arc::clone(provider_resolver),
+                Arc::clone(model_resolver),
+                rag_config,
             ),
             models: ModelService::new(
                 Arc::clone(&db),

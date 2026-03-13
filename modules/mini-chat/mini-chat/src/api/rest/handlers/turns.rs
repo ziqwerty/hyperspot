@@ -301,6 +301,27 @@ fn stream_error_to_response(err: &StreamError) -> Response {
             )
             .into_response()
         }
+        StreamError::InvalidAttachment { code, message } => {
+            info!(code = %code, message = %message, "invalid attachment in request");
+            Problem::new(StatusCode::BAD_REQUEST, code, message).into_response()
+        }
+        StreamError::ContextBudgetExceeded {
+            required_tokens,
+            available_tokens,
+        } => {
+            info!(
+                required_tokens,
+                available_tokens, "context budget exceeded, request rejected"
+            );
+            Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "context_budget_exceeded",
+                format!(
+                    "Context requires {required_tokens} tokens but only {available_tokens} are available"
+                ),
+            )
+            .into_response()
+        }
         other => {
             warn!(error = ?other, "post-mutation stream error");
             Problem::new(

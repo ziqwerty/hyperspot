@@ -47,6 +47,26 @@ pub enum DomainError {
 
     #[error("Web search calls exceeded for this message")]
     WebSearchCallsExceeded,
+
+    #[error("Unsupported file type: {mime}")]
+    UnsupportedFileType { mime: String },
+
+    #[error("File too large: {message}")]
+    FileTooLarge { message: String },
+
+    #[error("Document limit exceeded: {message}")]
+    DocumentLimitExceeded { message: String },
+
+    #[error("Storage limit exceeded: {message}")]
+    StorageLimitExceeded { message: String },
+
+    /// Provider returned an error. `sanitized_message` is pre-sanitized by
+    /// `sanitize_provider_message()` at construction — safe for client exposure.
+    #[error("Provider error: {sanitized_message}")]
+    ProviderError {
+        code: String,
+        sanitized_message: String,
+    },
 }
 
 impl DomainError {

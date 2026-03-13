@@ -6,7 +6,11 @@
 //! Stream event types live in `domain::stream_events`; SSE wire conversion
 //! and ordering enforcement live in `api::rest::sse`.
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use crate::domain::models::{AttachmentSummary, ChatDetail, ImgThumbnail};
+use crate::infra::db::entity::attachment::Model as AttachmentModel;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -148,6 +152,61 @@ impl From<ImgThumbnail> for ImgThumbnailDto {
             width: t.width,
             height: t.height,
             data_base64: t.data_base64,
+        }
+    }
+}
+
+/// Full attachment details returned by the GET attachment endpoint.
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct AttachmentDetailDto {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub storage_backend: String,
+    pub status: String,
+    pub attachment_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_thumbnail: Option<ImgThumbnailDto>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+impl From<AttachmentModel> for AttachmentDetailDto {
+    fn from(m: AttachmentModel) -> Self {
+        let img_thumbnail = m
+            .img_thumbnail
+            .zip(m.img_thumbnail_width)
+            .zip(m.img_thumbnail_height)
+            .map(|((bytes, w), h)| ImgThumbnailDto {
+                content_type: "image/webp".to_owned(),
+                width: w,
+                height: h,
+                data_base64: BASE64.encode(&bytes),
+            });
+
+        Self {
+            id: m.id,
+            chat_id: m.chat_id,
+            filename: m.filename,
+            content_type: m.content_type,
+            size_bytes: m.size_bytes,
+            storage_backend: m.storage_backend,
+            status: m.status.to_string(),
+            attachment_kind: m.attachment_kind.to_string(),
+            error_code: m.error_code,
+            doc_summary: m.doc_summary,
+            img_thumbnail,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
         }
     }
 }

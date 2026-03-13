@@ -6,7 +6,7 @@ use modkit_db::outbox::Outbox;
 use tracing::{info, warn};
 
 use crate::domain::error::DomainError;
-use crate::domain::repos::OutboxEnqueuer;
+use crate::domain::repos::{AttachmentCleanupEvent, OutboxEnqueuer};
 
 /// Infrastructure implementation of [`OutboxEnqueuer`].
 ///
@@ -15,14 +15,21 @@ use crate::domain::repos::OutboxEnqueuer;
 pub struct InfraOutboxEnqueuer {
     outbox: Arc<Outbox>,
     queue_name: String,
+    cleanup_queue_name: String,
     num_partitions: u32,
 }
 
 impl InfraOutboxEnqueuer {
-    pub(crate) fn new(outbox: Arc<Outbox>, queue_name: String, num_partitions: u32) -> Self {
+    pub(crate) fn new(
+        outbox: Arc<Outbox>,
+        queue_name: String,
+        cleanup_queue_name: String,
+        num_partitions: u32,
+    ) -> Self {
         Self {
             outbox,
             queue_name,
+            cleanup_queue_name,
             num_partitions,
         }
     }
@@ -73,8 +80,64 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         Ok(())
     }
 
+    async fn enqueue_attachment_cleanup(
+        &self,
+        runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        event: AttachmentCleanupEvent,
+    ) -> Result<(), DomainError> {
+        let partition = self.partition_for(event.tenant_id);
+        let payload = serde_json::to_vec(&event)
+            .map_err(|e| DomainError::internal(format!("serialize AttachmentCleanupEvent: {e}")))?;
+
+        self.outbox
+            .enqueue(
+                runner,
+                &self.cleanup_queue_name,
+                partition,
+                payload,
+                "application/json",
+            )
+            .await
+            .map_err(|e| DomainError::internal(format!("outbox enqueue: {e}")))?;
+
+        info!(
+            queue = %self.cleanup_queue_name,
+            partition,
+            tenant_id = %event.tenant_id,
+            attachment_id = %event.attachment_id,
+            "attachment cleanup event enqueued"
+        );
+
+        Ok(())
+    }
+
     fn flush(&self) {
         self.outbox.flush();
+    }
+}
+
+/// Stub handler for attachment cleanup events.
+///
+/// Returns `Retry` for every message — events accumulate safely in the outbox
+/// until the cleanup worker ships. This ensures the queue is registered and
+/// partitioned from day one.
+pub struct AttachmentCleanupHandler;
+
+#[async_trait]
+impl modkit_db::outbox::MessageHandler for AttachmentCleanupHandler {
+    async fn handle(
+        &self,
+        msg: &modkit_db::outbox::OutboxMessage,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> modkit_db::outbox::HandlerResult {
+        warn!(
+            partition_id = msg.partition_id,
+            seq = msg.seq,
+            "attachment cleanup handler not yet implemented - retrying"
+        );
+        modkit_db::outbox::HandlerResult::Retry {
+            reason: "cleanup handler not yet implemented".to_owned(),
+        }
     }
 }
 
@@ -501,7 +564,12 @@ mod tests {
         let outbox = Arc::clone(handle.outbox());
 
         // Enqueue a usage event using InfraOutboxEnqueuer.
-        let enqueuer = InfraOutboxEnqueuer::new(outbox, "test.usage".to_owned(), 1);
+        let enqueuer = InfraOutboxEnqueuer::new(
+            outbox,
+            "test.usage".to_owned(),
+            "test.cleanup".to_owned(),
+            1,
+        );
         let event = make_usage_event();
         let conn = db.conn().expect("conn");
         enqueuer

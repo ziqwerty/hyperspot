@@ -5,10 +5,10 @@
 //! and cannot access `QuotaService`, outbox, provider, or finalization types.
 
 use crate::domain::error::DomainError;
+use crate::domain::llm::Usage;
 use crate::domain::repos::MessageRepository;
 use crate::domain::stream_events::{DeltaData, DoneData, StreamEvent};
 use crate::infra::db::entity::chat_turn::Model as TurnModel;
-use crate::infra::llm::Usage;
 use modkit_security::AccessScope;
 
 use super::DbProvider;

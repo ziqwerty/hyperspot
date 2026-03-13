@@ -23,6 +23,8 @@ pub struct MiniChatConfig {
     pub outbox: OutboxConfig,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub rag: RagConfig,
     /// `OAuth2` client credentials for OAGW upstream provisioning.
     /// Mini-chat exchanges these via the `AuthN` resolver to obtain
     /// a `SecurityContext` for OAGW API calls.
@@ -33,6 +35,21 @@ pub struct MiniChatConfig {
     #[expand_vars]
     #[serde(default = "default_providers")]
     pub providers: HashMap<String, ProviderEntry>,
+}
+
+/// Which file/vector-store implementation to use for RAG operations.
+///
+/// Controls URI patterns (`/v1/…` vs `/openai/…?api-version=…`) and
+/// dispatch to provider-specific `FileStorageProvider` / `VectorStoreProvider`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StorageKind {
+    /// OpenAI-native: `/{alias}/v1/{path}`, no query params.
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// Azure `OpenAI`: `/{alias}/openai/{path}?api-version={ver}`.
+    /// Requires `api_version` to be set on the `ProviderEntry`.
+    #[serde(rename = "azure")]
+    Azure,
 }
 
 /// Configuration for a single LLM provider.
@@ -69,6 +86,25 @@ pub struct ProviderEntry {
     #[expand_vars]
     #[serde(default)]
     pub auth_config: Option<HashMap<String, String>>,
+    /// Storage backend label persisted in attachment/vector-store DB rows.
+    /// Used by cleanup workers to determine which provider API to target.
+    /// When `None`, falls back to the `provider_id` key as-is.
+    /// Example: `"azure"` for `azure_openai` providers.
+    #[serde(default)]
+    pub storage_backend: Option<String>,
+    /// Whether this provider supports `file_search` metadata filters.
+    /// Azure `OpenAI` does not support filters — `FilteredByAttachmentIds`
+    /// is degraded to `UnrestrictedChatSearch`. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub supports_file_search_filters: bool,
+    /// Which file/vector-store implementation to use for RAG operations.
+    /// Controls URI patterns and dispatch to provider-specific impls.
+    /// Required — no default; forces explicit configuration per provider.
+    pub storage_kind: StorageKind,
+    /// Optional API version query parameter appended to RAG requests.
+    /// Required for Azure (`?api-version=…`). Ignored for `OpenAI`.
+    #[serde(default)]
+    pub api_version: Option<String>,
     /// Per-tenant overrides. Key = tenant ID (UUID string).
     /// Overrides host and/or auth for specific tenants while sharing
     /// the same adapter kind and API path.
@@ -168,6 +204,10 @@ impl ProviderEntry {
     }
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 fn default_api_path() -> String {
     "/v1/responses".to_owned()
 }
@@ -191,6 +231,10 @@ fn default_providers() -> HashMap<String, ProviderEntry> {
                 c.insert("secret_ref".to_owned(), "cred://openai-key".to_owned());
                 c
             }),
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::OpenAi,
+            api_version: None,
             tenant_overrides: HashMap::new(),
         },
     );
@@ -291,6 +335,7 @@ impl Default for MiniChatConfig {
             quota: QuotaConfig::default(),
             outbox: OutboxConfig::default(),
             context: ContextConfig::default(),
+            rag: RagConfig::default(),
             client_credentials: ClientCredentialsConfig::default(),
             providers: default_providers(),
         }
@@ -441,6 +486,10 @@ pub struct OutboxConfig {
     #[serde(default = "default_outbox_queue_name")]
     pub queue_name: String,
 
+    /// Queue name for attachment cleanup events.
+    #[serde(default = "default_outbox_cleanup_queue_name")]
+    pub cleanup_queue_name: String,
+
     /// Number of outbox partitions. Must be 1–64.
     #[serde(default = "default_outbox_num_partitions")]
     pub num_partitions: u32,
@@ -450,6 +499,7 @@ impl Default for OutboxConfig {
     fn default() -> Self {
         Self {
             queue_name: default_outbox_queue_name(),
+            cleanup_queue_name: default_outbox_cleanup_queue_name(),
             num_partitions: default_outbox_num_partitions(),
         }
     }
@@ -459,6 +509,9 @@ impl OutboxConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.queue_name.trim().is_empty() {
             return Err("outbox queue_name must not be empty".to_owned());
+        }
+        if self.cleanup_queue_name.trim().is_empty() {
+            return Err("outbox cleanup_queue_name must not be empty".to_owned());
         }
         if !(1..=64).contains(&self.num_partitions) || !self.num_partitions.is_power_of_two() {
             return Err(format!(
@@ -472,6 +525,10 @@ impl OutboxConfig {
 
 fn default_outbox_queue_name() -> String {
     "mini-chat.usage_snapshot".to_owned()
+}
+
+fn default_outbox_cleanup_queue_name() -> String {
+    "mini-chat.attachment_cleanup".to_owned()
 }
 
 fn default_outbox_num_partitions() -> u32 {
@@ -533,6 +590,76 @@ fn default_recent_messages_limit() -> u32 {
     10
 }
 
+// ── RAG config ───────────────────────────────────────────────────────────
+
+fn default_max_documents_per_chat() -> u32 {
+    50
+}
+
+fn default_max_total_upload_mb_per_chat() -> u32 {
+    100
+}
+
+fn default_max_document_size_kb() -> u32 {
+    // 25 MB in KB
+    25 * 1024
+}
+
+fn default_max_image_size_kb() -> u32 {
+    // 5 MB in KB
+    5 * 1024
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[allow(clippy::struct_field_names)]
+pub struct RagConfig {
+    /// Maximum number of document attachments per chat.
+    #[serde(default = "default_max_documents_per_chat")]
+    pub max_documents_per_chat: u32,
+
+    /// Maximum total upload size per chat in MB.
+    #[serde(default = "default_max_total_upload_mb_per_chat")]
+    pub max_total_upload_mb_per_chat: u32,
+
+    /// Maximum single document file size in KB.
+    #[serde(default = "default_max_document_size_kb")]
+    pub max_document_size_kb: u32,
+
+    /// Maximum single image file size in KB.
+    #[serde(default = "default_max_image_size_kb")]
+    pub max_image_size_kb: u32,
+}
+
+impl Default for RagConfig {
+    fn default() -> Self {
+        Self {
+            max_documents_per_chat: default_max_documents_per_chat(),
+            max_total_upload_mb_per_chat: default_max_total_upload_mb_per_chat(),
+            max_document_size_kb: default_max_document_size_kb(),
+            max_image_size_kb: default_max_image_size_kb(),
+        }
+    }
+}
+
+impl RagConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_documents_per_chat == 0 {
+            return Err("rag max_documents_per_chat must be > 0".into());
+        }
+        if self.max_total_upload_mb_per_chat == 0 {
+            return Err("rag max_total_upload_mb_per_chat must be > 0".into());
+        }
+        if self.max_document_size_kb == 0 {
+            return Err("rag max_document_size_kb must be > 0".into());
+        }
+        if self.max_image_size_kb == 0 {
+            return Err("rag max_image_size_kb must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
 fn default_url_prefix() -> String {
     DEFAULT_URL_PREFIX.to_owned()
 }
@@ -552,6 +679,7 @@ mod tests {
         QuotaConfig::default().validate().unwrap();
         OutboxConfig::default().validate().unwrap();
         ContextConfig::default().validate().unwrap();
+        RagConfig::default().validate().unwrap();
     }
 
     #[test]
@@ -708,6 +836,7 @@ mod tests {
     fn provider_entry_deser_with_alias() {
         let json = r#"{
             "kind": "openai_responses",
+            "storage_kind": "openai",
             "host": "10.0.0.1",
             "upstream_alias": "my-llm-service"
         }"#;
@@ -721,6 +850,7 @@ mod tests {
     fn provider_entry_deser_without_alias() {
         let json = r#"{
             "kind": "openai_responses",
+            "storage_kind": "azure",
             "host": "my-azure.openai.azure.com",
             "api_path": "/openai/v1/responses"
         }"#;
@@ -734,6 +864,7 @@ mod tests {
     fn provider_entry_deser_with_auth() {
         let json = r#"{
             "kind": "openai_responses",
+            "storage_kind": "openai",
             "host": "api.openai.com",
             "auth_plugin_type": "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1",
             "auth_config": {
@@ -762,6 +893,7 @@ mod tests {
     fn provider_entry_deser_with_tenant_overrides() {
         let json = r#"{
             "kind": "openai_responses",
+            "storage_kind": "azure",
             "host": "default.openai.azure.com",
             "api_path": "/openai/v1/responses",
             "tenant_overrides": {
@@ -791,6 +923,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: None,
             auth_config: None,
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -850,6 +986,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: Some("root-plugin".to_owned()),
             auth_config: Some(root_auth),
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -901,6 +1041,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: None,
             auth_config: None,
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -929,6 +1073,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: None,
             auth_config: None,
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -961,6 +1109,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: None,
             auth_config: None,
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -989,6 +1141,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: None,
             auth_config: None,
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(
@@ -1015,6 +1171,10 @@ mod tests {
             api_path: "/v1/responses".to_owned(),
             auth_plugin_type: None,
             auth_config: None,
+            storage_backend: None,
+            supports_file_search_filters: true,
+            storage_kind: StorageKind::Azure,
+            api_version: Some("2024-10-21".to_owned()),
             tenant_overrides: {
                 let mut m = HashMap::new();
                 m.insert(

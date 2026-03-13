@@ -114,6 +114,7 @@ pub(crate) async fn stream_message(
             body.content,
             resolved,
             web_search_enabled,
+            body.attachment_ids,
             cancel.clone(),
             tx,
         )
@@ -198,6 +199,27 @@ fn stream_error_response(err: &StreamError) -> Response {
                 StatusCode::BAD_REQUEST,
                 "web_search_disabled",
                 "Web search is currently disabled",
+            )
+            .into_response()
+        }
+        StreamError::InvalidAttachment { code, message } => {
+            info!(code = %code, message = %message, "invalid attachment in request");
+            Problem::new(StatusCode::BAD_REQUEST, code, message).into_response()
+        }
+        StreamError::ContextBudgetExceeded {
+            required_tokens,
+            available_tokens,
+        } => {
+            info!(
+                required_tokens,
+                available_tokens, "context budget exceeded, request rejected"
+            );
+            Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "context_budget_exceeded",
+                format!(
+                    "Context requires {required_tokens} tokens but only {available_tokens} are available"
+                ),
             )
             .into_response()
         }

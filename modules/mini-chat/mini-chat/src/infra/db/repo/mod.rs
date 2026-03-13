@@ -1,5 +1,6 @@
 pub mod attachment_repo;
 pub mod chat_repo;
+pub mod message_attachment_repo;
 pub mod message_repo;
 pub mod quota_usage_repo;
 pub mod reaction_repo;

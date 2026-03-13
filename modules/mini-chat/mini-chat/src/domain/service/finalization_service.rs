@@ -347,6 +347,7 @@ enum FinalizationError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::domain::llm::Usage;
     use crate::domain::model::finalization::FinalizationInput;
     use crate::domain::model::quota::{SettlementMethod, SettlementOutcome};
     use crate::domain::repos::{CreateTurnParams, TurnRepository as TurnRepoTrait};
@@ -355,7 +356,6 @@ mod tests {
     use crate::infra::db::entity::quota_usage::PeriodType;
     use crate::infra::db::repo::message_repo::MessageRepository as MsgRepo;
     use crate::infra::db::repo::turn_repo::TurnRepository as TurnRepo;
-    use crate::infra::llm::Usage;
     use modkit_security::AccessScope;
     use uuid::Uuid;
 
@@ -406,6 +406,14 @@ mod tests {
             &self,
             _runner: &(dyn modkit_db::secure::DBRunner + Sync),
             _event: mini_chat_sdk::UsageEvent,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn enqueue_attachment_cleanup(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _event: crate::domain::repos::AttachmentCleanupEvent,
         ) -> Result<(), DomainError> {
             Ok(())
         }

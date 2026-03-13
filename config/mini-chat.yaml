@@ -125,13 +125,15 @@ modules:
       providers:
         azure_openai:
           kind: openai_responses
+          storage_kind: azure
           host: "${AZURE_OPENAI_API_HOST}"
           api_path: "/openai/v1/responses"
+          api_version: "2025-03-01-preview"
           auth_plugin_type: "gts.x.core.oagw.auth_plugin.v1~x.core.oagw.apikey.v1"
           auth_config:
             header: "api-key"
             prefix: ""
-            secret_ref: "cred://azure-openai-key"
+            secret_ref: "azure-openai-key"
 
       # ── Azure OpenAI example (uncomment and set your endpoint) ──────────
       #   azure_openai:
@@ -143,7 +145,7 @@ modules:
       #     auth_config:
       #       header: "api-key"
       #       prefix: ""
-      #       secret_ref: "cred://azure-openai-key"
+      #       secret_ref: "azure-openai-key"
       #
       # ── Per-tenant Azure example (each tenant gets its own endpoint/auth) ─
       # Tenant overrides share the root provider's adapter kind and api_path.
@@ -158,20 +160,20 @@ modules:
       #     auth_config:
       #       header: "api-key"
       #       prefix: ""
-      #       secret_ref: "cred://azure-openai-key"
+      #       secret_ref: "azure-openai-key"
       #     tenant_overrides:
       #       "tenant-a-uuid":
       #         host: "tenant-a.openai.azure.com"
       #         auth_config:
       #           header: "api-key"
       #           prefix: ""
-      #           secret_ref: "cred://azure-openai-key-tenant-a"
+      #           secret_ref: "azure-openai-key-tenant-a"
       #       "tenant-b-uuid":
       #         host: "tenant-b.openai.azure.com"
       #         auth_config:
       #           header: "api-key"
       #           prefix: ""
-      #           secret_ref: "cred://azure-openai-key-tenant-b"
+      #           secret_ref: "azure-openai-key-tenant-b"
       #     # NOTE: tenant secret_ref values need matching entries under
       #     # modules.static-credstore-plugin.config.secrets
 

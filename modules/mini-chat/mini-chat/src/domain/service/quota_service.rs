@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use mini_chat_sdk::{ModelCatalogEntry, ModelTier, PolicySnapshot, UserLimits};
+use mini_chat_sdk::{KillSwitches, ModelCatalogEntry, ModelTier, PolicySnapshot, UserLimits};
 use modkit_db::secure::DBRunner;
 use modkit_macros::domain_model;
 use modkit_security::AccessScope;
@@ -256,6 +256,9 @@ pub struct PreflightComputed {
     pub(crate) periods: Vec<(PeriodType, time::Date)>,
     pub(crate) tenant_id: uuid::Uuid,
     pub(crate) user_id: uuid::Uuid,
+    /// Policy kill switches captured at preflight time.
+    /// Avoids a redundant `PolicySnapshotProvider::get()` call in `run_stream()`.
+    pub kill_switches: KillSwitches,
 }
 
 // ── preflight_evaluate + preflight_write_reserve ──
@@ -386,6 +389,7 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                 periods: periods.clone(),
                                 tenant_id,
                                 user_id,
+                                kill_switches: snapshot.kill_switches.clone(),
                             });
                         }
                     }
@@ -412,6 +416,7 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                             periods: periods.clone(),
                             tenant_id,
                             user_id,
+                            kill_switches: snapshot.kill_switches.clone(),
                         }),
                         CascadeDecision::Allow {
                             ref effective_model,
@@ -464,6 +469,26 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
 
                             let system_prompt = eff_entry.system_prompt.clone();
 
+                            let model_estimation_budgets = EstimationBudgets {
+                                bytes_per_token_conservative: eff_entry
+                                    .estimation_budgets
+                                    .bytes_per_token_conservative,
+                                fixed_overhead_tokens: eff_entry
+                                    .estimation_budgets
+                                    .fixed_overhead_tokens,
+                                safety_margin_pct: eff_entry.estimation_budgets.safety_margin_pct,
+                                image_token_budget: eff_entry.estimation_budgets.image_token_budget,
+                                tool_surcharge_tokens: eff_entry
+                                    .estimation_budgets
+                                    .tool_surcharge_tokens,
+                                web_search_surcharge_tokens: eff_entry
+                                    .estimation_budgets
+                                    .web_search_surcharge_tokens,
+                                minimal_generation_floor: eff_entry
+                                    .estimation_budgets
+                                    .minimal_generation_floor,
+                            };
+
                             let preflight_decision = match decision {
                                 CascadeDecision::Allow { .. } => PreflightDecision::Allow {
                                     effective_model,
@@ -473,6 +498,9 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                     policy_version_applied,
                                     minimal_generation_floor_applied,
                                     system_prompt,
+                                    context_window: eff_entry.context_window,
+                                    max_input_tokens: eff_entry.max_input_tokens,
+                                    estimation_budgets: model_estimation_budgets,
                                 },
                                 CascadeDecision::Downgrade {
                                     downgrade_from,
@@ -488,6 +516,9 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                     downgrade_from,
                                     downgrade_reason: reason,
                                     system_prompt,
+                                    context_window: eff_entry.context_window,
+                                    max_input_tokens: eff_entry.max_input_tokens,
+                                    estimation_budgets: model_estimation_budgets,
                                 },
                                 CascadeDecision::Reject => unreachable!(),
                             };
@@ -499,6 +530,7 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                 periods: periods.clone(),
                                 tenant_id,
                                 user_id,
+                                kill_switches: snapshot.kill_switches.clone(),
                             })
                         }
                     }
@@ -1707,6 +1739,83 @@ mod tests {
                 assert_eq!(downgrade_reason, DowngradeReason::ForceStandardTier);
             }
             other => panic!("expected Downgrade, got {other:?}"),
+        }
+    }
+
+    // 4.7: Downgraded model carries fallback model's context_window, not original's
+    #[tokio::test]
+    async fn downgraded_model_carries_fallback_context_window() {
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let mut snapshot = default_snapshot();
+        // Premium (gpt-5): context_window=128_000, Standard (gpt-5-mini): context_window=64_000
+        snapshot.model_catalog[0].context_window = 200_000;
+        snapshot.model_catalog[0].max_input_tokens = 190_000;
+        snapshot.model_catalog[1].context_window = 64_000;
+        snapshot.model_catalog[1].max_input_tokens = 60_000;
+        snapshot.kill_switches.force_standard_tier = true; // force downgrade
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let result = svc
+            .preflight_reserve(preflight_input("gpt-5"))
+            .await
+            .unwrap();
+        match result {
+            PreflightDecision::Downgrade {
+                context_window,
+                max_input_tokens,
+                effective_model,
+                ..
+            } => {
+                assert_eq!(effective_model, "gpt-5-mini");
+                assert_eq!(
+                    context_window, 64_000,
+                    "should use fallback model's context_window"
+                );
+                assert_eq!(
+                    max_input_tokens, 60_000,
+                    "should use fallback model's max_input_tokens"
+                );
+            }
+            other => panic!("expected Downgrade, got {other:?}"),
+        }
+    }
+
+    // 4.8: Per-model EstimationBudgets override flows through PreflightDecision
+    #[tokio::test]
+    async fn per_model_estimation_budgets_flow_through() {
+        let db_raw = inmem_db().await;
+        let db = mock_db_provider(db_raw);
+        let mut snapshot = default_snapshot();
+        // Set custom estimation budgets on gpt-5
+        snapshot.model_catalog[0].estimation_budgets = mini_chat_sdk::EstimationBudgets {
+            bytes_per_token_conservative: 3,
+            fixed_overhead_tokens: 200,
+            safety_margin_pct: 15,
+            image_token_budget: 2000,
+            tool_surcharge_tokens: 1000,
+            web_search_surcharge_tokens: 800,
+            minimal_generation_floor: 256,
+        };
+        let svc = make_test_service(Arc::clone(&db), snapshot, 1.10);
+
+        let result = svc
+            .preflight_reserve(preflight_input("gpt-5"))
+            .await
+            .unwrap();
+        match result {
+            PreflightDecision::Allow {
+                estimation_budgets, ..
+            } => {
+                assert_eq!(estimation_budgets.bytes_per_token_conservative, 3);
+                assert_eq!(estimation_budgets.fixed_overhead_tokens, 200);
+                assert_eq!(estimation_budgets.safety_margin_pct, 15);
+                assert_eq!(estimation_budgets.image_token_budget, 2000);
+                assert_eq!(estimation_budgets.tool_surcharge_tokens, 1000);
+                assert_eq!(estimation_budgets.web_search_surcharge_tokens, 800);
+                assert_eq!(estimation_budgets.minimal_generation_floor, 256);
+            }
+            other => panic!("expected Allow, got {other:?}"),
         }
     }
 

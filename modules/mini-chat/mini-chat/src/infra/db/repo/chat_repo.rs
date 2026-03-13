@@ -8,7 +8,7 @@ use modkit_db::secure::{
 };
 use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
-use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::{Expr, LockType};
 use sea_orm::{EntityTrait, FromQueryResult, QueryFilter, QuerySelect, Set};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -152,6 +152,27 @@ impl crate::domain::repos::ChatRepository for ChatRepository {
             .map_err(db_err)?;
 
         Ok(result.rows_affected > 0)
+    }
+
+    async fn get_for_update<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        id: Uuid,
+    ) -> Result<Option<Chat>, DomainError> {
+        let found = Entity::find()
+            .filter(
+                sea_orm::Condition::all()
+                    .add(Expr::col(Column::Id).eq(id))
+                    .add(Expr::col(Column::DeletedAt).is_null()),
+            )
+            .lock(LockType::Update)
+            .secure()
+            .scope_with(scope)
+            .one(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(found.map(Into::into))
     }
 
     async fn count_messages<C: DBRunner>(

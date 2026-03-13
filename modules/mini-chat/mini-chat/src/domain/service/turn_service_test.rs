@@ -19,6 +19,7 @@ async fn setup() -> (
         repo::turn_repo::TurnRepository,
         repo::message_repo::MessageRepository,
         repo::chat_repo::ChatRepository,
+        repo::message_attachment_repo::MessageAttachmentRepository,
     >,
     modkit_security::SecurityContext,
     Uuid, // chat_id
@@ -70,6 +71,7 @@ async fn setup() -> (
         turn_repo,
         message_repo,
         chat_repo,
+        Arc::new(crate::infra::db::repo::message_attachment_repo::MessageAttachmentRepository),
         mock_enforcer(),
     );
 

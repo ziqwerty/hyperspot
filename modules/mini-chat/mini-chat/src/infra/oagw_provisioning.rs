@@ -249,6 +249,104 @@ async fn register_route(
         "OAGW route registered"
     );
 
+    // Register RAG-related routes (Files API, Vector Stores API) on the same upstream.
+    register_rag_routes(gateway, ctx, provider_id, entry, upstream).await?;
+
+    Ok(())
+}
+
+/// RAG route definitions: method, path suffix (appended to RAG prefix), suffix mode.
+///
+/// Note: POST `vector_stores` uses suffix=true to cover both the create
+/// endpoint (exact path) and the add-file-to-VS endpoint ({id}/files).
+/// Having two routes with the same method+path but different suffix modes
+/// causes OAGW to pick the first registered one, blocking the suffix path.
+const RAG_ROUTES: &[(&str, &str, bool)] = &[
+    // POST {prefix}/files — upload file to provider
+    ("POST", "/files", false),
+    // DELETE {prefix}/files/{file_id} — delete provider file
+    ("DELETE", "/files", true),
+    // POST {prefix}/vector_stores — create vector store (exact)
+    // POST {prefix}/vector_stores/{id}/files — add file to vector store (suffix)
+    // Single route with suffix=true handles both paths.
+    ("POST", "/vector_stores", true),
+    // DELETE {prefix}/vector_stores/{vs_id}/files/{file_id} — remove file from vector store
+    ("DELETE", "/vector_stores", true),
+];
+
+/// Register OAGW routes for RAG operations (Files API, Vector Stores API).
+#[allow(clippy::cognitive_complexity)]
+async fn register_rag_routes(
+    gateway: &Arc<dyn ServiceGatewayClientV1>,
+    ctx: &modkit_security::SecurityContext,
+    provider_id: &str,
+    entry: &ProviderEntry,
+    upstream: &oagw_sdk::Upstream,
+) -> anyhow::Result<()> {
+    use oagw_sdk::{CreateRouteRequest, HttpMatch, HttpMethod, MatchRules, PathSuffixMode};
+
+    // Derive RAG path prefix from storage_kind:
+    // Azure → /openai (+ api-version query param), OpenAi → /v1
+    let (prefix, query_allowlist) = match entry.storage_kind {
+        crate::config::StorageKind::Azure => ("/openai", vec!["api-version".to_owned()]),
+        crate::config::StorageKind::OpenAi => ("/v1", vec![]),
+    };
+
+    for &(method_str, path_suffix, append_suffix) in RAG_ROUTES {
+        let method = match method_str {
+            "POST" => HttpMethod::Post,
+            "DELETE" => HttpMethod::Delete,
+            _ => continue,
+        };
+
+        let suffix_mode = if append_suffix {
+            PathSuffixMode::Append
+        } else {
+            PathSuffixMode::Disabled
+        };
+
+        let full_path = format!("{prefix}{path_suffix}");
+
+        let match_rules = MatchRules {
+            http: Some(HttpMatch {
+                methods: vec![method],
+                path: full_path.clone(),
+                query_allowlist: query_allowlist.clone(),
+                path_suffix_mode: suffix_mode,
+            }),
+            grpc: None,
+        };
+
+        match gateway
+            .create_route(
+                ctx.clone(),
+                CreateRouteRequest::builder(upstream.id, match_rules)
+                    .enabled(true)
+                    .build(),
+            )
+            .await
+        {
+            Ok(route) => {
+                info!(
+                    provider_id,
+                    route_id = %route.id,
+                    route_path = %full_path,
+                    method = method_str,
+                    "OAGW RAG route registered"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    provider_id,
+                    error = %e,
+                    route_path = %full_path,
+                    method = method_str,
+                    "OAGW RAG route registration failed (may already exist)"
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 

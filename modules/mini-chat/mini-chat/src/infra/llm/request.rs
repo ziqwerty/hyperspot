@@ -15,7 +15,7 @@ use super::{NonStreaming, Streaming};
 
 // Re-export domain-level LLM types so existing `crate::infra::llm::request::*`
 // imports continue to work.
-pub use crate::domain::llm::{ContentPart, LlmMessage, LlmTool, Role};
+pub use crate::domain::llm::{ContentPart, FileSearchFilter, LlmMessage, LlmTool, Role};
 
 // ════════════════════════════════════════════════════════════════════════════
 // User identity and metadata

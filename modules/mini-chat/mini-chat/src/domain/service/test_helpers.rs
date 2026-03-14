@@ -1011,6 +1011,103 @@ impl ServiceGatewayClientV1 for MockOagwGateway {
 
 // ── Mock User Limits Provider ──
 
+// ── TestMetrics — recording implementation for metric assertions ─────
+
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+
+/// Lightweight `MiniChatMetricsPort` that records counter increments
+/// and histogram observation counts via atomics. Used to verify that
+/// service code emits the expected metrics.
+pub struct TestMetrics {
+    pub turn_mutation: AtomicU64,
+    pub turn_mutation_latency_ms: AtomicU64,
+    pub audit_emit: AtomicU64,
+    pub finalization_latency_ms: AtomicU64,
+    pub quota_commit: AtomicU64,
+    pub quota_overshoot: AtomicU64,
+    pub quota_actual_tokens: AtomicU64,
+    pub streams_aborted: AtomicU64,
+    pub attachment_upload: AtomicU64,
+    pub attachment_upload_bytes: AtomicU64,
+    pub attachments_pending: AtomicI64,
+}
+
+impl TestMetrics {
+    pub fn new() -> Self {
+        Self {
+            turn_mutation: AtomicU64::new(0),
+            turn_mutation_latency_ms: AtomicU64::new(0),
+            audit_emit: AtomicU64::new(0),
+            finalization_latency_ms: AtomicU64::new(0),
+            quota_commit: AtomicU64::new(0),
+            quota_overshoot: AtomicU64::new(0),
+            quota_actual_tokens: AtomicU64::new(0),
+            streams_aborted: AtomicU64::new(0),
+            attachment_upload: AtomicU64::new(0),
+            attachment_upload_bytes: AtomicU64::new(0),
+            attachments_pending: AtomicI64::new(0),
+        }
+    }
+}
+
+impl crate::domain::ports::MiniChatMetricsPort for TestMetrics {
+    fn record_stream_started(&self, _: &str, _: &str) {}
+    fn record_stream_completed(&self, _: &str, _: &str) {}
+    fn record_stream_failed(&self, _: &str, _: &str, _: &str) {}
+    fn record_stream_disconnected(&self, _: &str) {}
+    fn increment_active_streams(&self) {}
+    fn decrement_active_streams(&self) {}
+    fn record_ttft_provider_ms(&self, _: &str, _: &str, _: f64) {}
+    fn record_ttft_overhead_ms(&self, _: &str, _: &str, _: f64) {}
+    fn record_stream_total_latency_ms(&self, _: &str, _: &str, _: f64) {}
+    fn record_turn_mutation(&self, _: &str, _: &str) {
+        self.turn_mutation.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_turn_mutation_latency_ms(&self, _: &str, _: f64) {
+        self.turn_mutation_latency_ms
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_audit_emit(&self, _: &str) {
+        self.audit_emit.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_finalization_latency_ms(&self, _: f64) {
+        self.finalization_latency_ms.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_quota_preflight(&self, _: &str, _: &str, _: &str) {}
+    fn record_quota_reserve(&self, _: &str) {}
+    fn record_quota_commit(&self, _: &str) {
+        self.quota_commit.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_quota_overshoot(&self, _: &str) {
+        self.quota_overshoot.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_quota_estimated_tokens(&self, _: f64) {}
+    fn record_quota_actual_tokens(&self, _: f64) {
+        self.quota_actual_tokens.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_stream_incomplete(&self, _: &str, _: &str, _: &str) {}
+    fn record_cancel_requested(&self, _: &str) {}
+    fn record_cancel_effective(&self, _: &str) {}
+    fn record_time_to_abort_ms(&self, _: &str, _: f64) {}
+    fn record_streams_aborted(&self, _: &str) {
+        self.streams_aborted.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_attachment_upload(&self, _: &str, _: &str) {
+        self.attachment_upload.fetch_add(1, Ordering::Relaxed);
+    }
+    fn record_attachment_upload_bytes(&self, _: &str, _: f64) {
+        self.attachment_upload_bytes.fetch_add(1, Ordering::Relaxed);
+    }
+    fn increment_attachments_pending(&self) {
+        self.attachments_pending.fetch_add(1, Ordering::Relaxed);
+    }
+    fn decrement_attachments_pending(&self) {
+        self.attachments_pending.fetch_add(-1, Ordering::Relaxed);
+    }
+}
+
+// ── Mock User Limits Provider ──
+
 pub struct MockUserLimitsProvider {
     limits: Mutex<UserLimits>,
 }

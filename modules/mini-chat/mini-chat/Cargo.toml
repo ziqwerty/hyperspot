@@ -72,6 +72,9 @@ sea-orm-migration = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Metrics / OpenTelemetry
+opentelemetry = { workspace = true }
+
 # Local dependencies
 modkit = { workspace = true }
 modkit-db = { workspace = true, features = ["sqlite", "pg", "preview-outbox"] }
@@ -79,8 +82,10 @@ modkit-db-macros = { workspace = true }
 modkit-security = { workspace = true }
 modkit-macros = { workspace = true }
 modkit-odata = { workspace = true, features = ["with-utoipa"] }
+modkit-utils = { workspace = true }
 secrecy = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 

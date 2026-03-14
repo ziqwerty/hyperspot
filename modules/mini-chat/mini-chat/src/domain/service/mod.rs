@@ -6,6 +6,7 @@ use modkit_db::DBProvider;
 use modkit_macros::domain_model;
 
 use crate::config::{ContextConfig, EstimationBudgets, QuotaConfig, RagConfig, StreamingConfig};
+use crate::domain::ports::MiniChatMetricsPort;
 use crate::domain::repos::{
     AttachmentRepository, ChatRepository, MessageAttachmentRepository, MessageRepository,
     ModelResolver, OutboxEnqueuer, PolicySnapshotProvider, QuotaUsageRepository,
@@ -144,6 +145,7 @@ pub(crate) struct AppServices<
     pub(crate) message_repo: Arc<MR>,
     pub(crate) turn_repo: Arc<TR>,
     pub(crate) enforcer: PolicyEnforcer,
+    pub(crate) metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
 impl<
@@ -175,6 +177,7 @@ impl<
         file_storage: Arc<dyn crate::domain::ports::FileStorageProvider>,
         vector_store_provider: Arc<dyn crate::domain::ports::VectorStoreProvider>,
         rag_config: RagConfig,
+        metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
 
@@ -195,6 +198,7 @@ impl<
             Arc::clone(&repos.message),
             Arc::clone(&quota_svc) as Arc<dyn QuotaSettler>,
             Arc::clone(outbox_enqueuer),
+            Arc::clone(&metrics),
         ));
 
         let turns = TurnService::new(
@@ -204,6 +208,7 @@ impl<
             Arc::clone(&repos.chat),
             Arc::clone(&repos.message_attachment),
             enforcer.clone(),
+            Arc::clone(&metrics),
         );
 
         Self {
@@ -236,6 +241,7 @@ impl<
                 Arc::clone(&repos.vector_store),
                 Arc::clone(&repos.message_attachment),
                 context_config,
+                Arc::clone(&metrics),
             ),
             turns,
             reactions: ReactionService::new(
@@ -257,6 +263,7 @@ impl<
                 Arc::clone(provider_resolver),
                 Arc::clone(model_resolver),
                 rag_config,
+                Arc::clone(&metrics),
             ),
             models: ModelService::new(
                 Arc::clone(&db),
@@ -269,6 +276,7 @@ impl<
             message_repo: Arc::clone(&repos.message),
             turn_repo: Arc::clone(&repos.turn),
             enforcer,
+            metrics,
         }
     }
 }

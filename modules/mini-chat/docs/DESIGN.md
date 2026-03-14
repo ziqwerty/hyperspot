@@ -3226,7 +3226,7 @@ The following metric series MUST be exposed (types and label sets shown). These 
 
 - `mini_chat_audit_emit_total{result}` (counter; `result`: `ok|failed|dropped`)
 - `mini_chat_audit_redaction_hits_total{pattern}` (counter; `pattern` MUST be from a bounded allowlist)
-- `mini_chat_audit_emit_latency_ms` (histogram)
+- `mini_chat_finalization_latency_ms` (histogram)
 
 ##### Outbox health and monitoring (P1)
 

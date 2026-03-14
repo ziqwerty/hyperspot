@@ -1,8 +1,10 @@
-//! Domain-level port traits for file storage and vector store operations.
+//! Domain-level port traits for file storage, vector store operations,
+//! and observability (metrics).
 //!
-//! These traits decouple `AttachmentService` from provider-specific HTTP
-//! details (URI paths, multipart encoding, response DTOs). Infrastructure
-//! implementations live in `infra::llm::providers`.
+//! These traits decouple domain services from provider-specific HTTP
+//! details (URI paths, multipart encoding, response DTOs) and from
+//! concrete telemetry implementations. Infrastructure implementations
+//! live in `infra::llm::providers` and `infra::metrics`.
 
 use std::collections::HashMap;
 
@@ -12,6 +14,11 @@ use modkit_macros::domain_model;
 use modkit_security::SecurityContext;
 
 use super::error::DomainError;
+
+pub(crate) mod metric_labels;
+pub(crate) mod metrics;
+
+pub(crate) use metrics::MiniChatMetricsPort;
 
 // ── Error type ──────────────────────────────────────────────────────────
 

@@ -95,6 +95,54 @@ fn build_service(
         provider_resolver,
         mock_model_resolver(),
         rag_config,
+        Arc::new(crate::domain::ports::metrics::NoopMetrics),
+    )
+}
+
+/// Build an `AttachmentService` with a custom metrics implementation.
+fn build_service_with_metrics(
+    db: modkit_db::Db,
+    oagw: Arc<dyn oagw_sdk::ServiceGatewayClientV1>,
+    outbox: Arc<dyn crate::domain::repos::OutboxEnqueuer>,
+    rag_config: RagConfig,
+    metrics: Arc<dyn crate::domain::ports::MiniChatMetricsPort>,
+) -> TestAttachmentService {
+    let db = mock_db_provider(db);
+    let chat_repo = Arc::new(OrmChatRepository::new(modkit_db::odata::LimitCfg {
+        default: 20,
+        max: 100,
+    }));
+    let attachment_repo = Arc::new(OrmAttachmentRepository);
+    let vector_store_repo = Arc::new(OrmVectorStoreRepository);
+    let provider_resolver = test_provider_resolver(&(Arc::clone(&oagw) as _));
+    let rag_client =
+        Arc::new(crate::infra::llm::providers::rag_http_client::RagHttpClient::new(oagw));
+    let file_storage: Arc<dyn crate::domain::ports::FileStorageProvider> = Arc::new(
+        crate::infra::llm::providers::openai_file_storage::OpenAiFileStorage::new(
+            Arc::clone(&rag_client),
+            Arc::clone(&provider_resolver),
+        ),
+    );
+    let vector_store_prov: Arc<dyn crate::domain::ports::VectorStoreProvider> = Arc::new(
+        crate::infra::llm::providers::openai_vector_store::OpenAiVectorStore::new(
+            rag_client,
+            Arc::clone(&provider_resolver),
+        ),
+    );
+
+    AttachmentService::new(
+        db,
+        attachment_repo,
+        chat_repo,
+        vector_store_repo,
+        outbox,
+        mock_tenant_only_enforcer(),
+        file_storage,
+        vector_store_prov,
+        provider_resolver,
+        mock_model_resolver(),
+        rag_config,
+        metrics,
     )
 }
 
@@ -1890,6 +1938,7 @@ fn build_service_azure(
         provider_resolver,
         azure_model_resolver(),
         rag_config,
+        Arc::new(crate::domain::ports::metrics::NoopMetrics),
     )
 }
 
@@ -2470,5 +2519,64 @@ async fn test_image_exceeding_max_size_returns_file_too_large() {
     assert!(
         matches!(result.unwrap_err(), DomainError::FileTooLarge { .. }),
         "should be FileTooLarge"
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Metrics emission
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Successful image upload emits upload counter, bytes histogram, and
+/// the pending gauge returns to zero (`PendingGuard` balanced).
+#[tokio::test]
+async fn upload_image_emits_metrics_and_gauge_balanced() {
+    use crate::domain::service::test_helpers::TestMetrics;
+    use std::sync::atomic::Ordering;
+
+    let db = inmem_db().await;
+    let tenant_id = Uuid::new_v4();
+    let chat_id = Uuid::new_v4();
+    let user_id = Uuid::new_v4();
+    let db_prov = mock_db_provider(db.clone());
+    insert_chat_for_user(&db_prov, tenant_id, chat_id, user_id).await;
+
+    let ctx = crate::domain::service::test_helpers::test_security_ctx_with_id(tenant_id, user_id);
+
+    let oagw = MockOagwGateway::with_responses(vec![Ok(file_upload_response("file-img-m1"))]);
+    let outbox = Arc::new(NoopOutboxEnqueuer);
+    let metrics = Arc::new(TestMetrics::new());
+    let svc = build_service_with_metrics(
+        db,
+        Arc::clone(&oagw) as _,
+        outbox,
+        RagConfig::default(),
+        Arc::clone(&metrics) as _,
+    );
+
+    let result = svc
+        .upload_file(
+            &ctx,
+            chat_id,
+            "photo.png".to_owned(),
+            "image/png",
+            Bytes::from(vec![0u8; 2048]),
+        )
+        .await;
+    assert!(result.is_ok(), "upload should succeed: {result:?}");
+
+    assert_eq!(
+        metrics.attachment_upload.load(Ordering::Relaxed),
+        1,
+        "should record attachment_upload counter"
+    );
+    assert_eq!(
+        metrics.attachment_upload_bytes.load(Ordering::Relaxed),
+        1,
+        "should record attachment_upload_bytes histogram"
+    );
+    assert_eq!(
+        metrics.attachments_pending.load(Ordering::Relaxed),
+        0,
+        "pending gauge should be back to zero (guard balanced)"
     );
 }

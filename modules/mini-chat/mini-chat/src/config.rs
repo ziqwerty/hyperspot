@@ -31,6 +31,8 @@ pub struct MiniChatConfig {
     #[expand_vars]
     #[serde(skip_serializing)]
     pub client_credentials: ClientCredentialsConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     /// Provider registry. Key = `provider_id` (matches [`ModelCatalogEntry::provider_id`]).
     #[expand_vars]
     #[serde(default = "default_providers")]
@@ -50,6 +52,32 @@ pub enum StorageKind {
     /// Requires `api_version` to be set on the `ProviderEntry`.
     #[serde(rename = "azure")]
     Azure,
+}
+
+/// Metrics configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsConfig {
+    /// Metric name prefix. When absent, derived from the module name
+    /// by converting it to `snake_case` (e.g., `"mini-chat"` → `"mini_chat"`).
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+impl MetricsConfig {
+    /// Resolve the effective prefix: explicit config value, or
+    /// `snake_case(module_name)`.
+    #[must_use]
+    pub fn effective_prefix(&self, module_name: &str) -> String {
+        self.prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map_or_else(
+                || modkit_utils::naming::to_snake_case(module_name),
+                str::to_owned,
+            )
+    }
 }
 
 /// Configuration for a single LLM provider.
@@ -337,6 +365,7 @@ impl Default for MiniChatConfig {
             context: ContextConfig::default(),
             rag: RagConfig::default(),
             client_credentials: ClientCredentialsConfig::default(),
+            metrics: MetricsConfig::default(),
             providers: default_providers(),
         }
     }

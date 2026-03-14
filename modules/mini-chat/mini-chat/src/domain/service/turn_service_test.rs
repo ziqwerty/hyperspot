@@ -5,10 +5,12 @@ use uuid::Uuid;
 
 use crate::domain::repos::{ChatRepository, TurnRepository};
 use crate::domain::service::TurnService;
+use crate::domain::service::test_helpers::TestMetrics;
 use crate::domain::service::test_helpers::*;
 use crate::domain::service::turn_service::MutationError;
 use crate::infra::db::entity::chat_turn::TurnState;
 use crate::infra::db::repo;
+use std::sync::atomic::Ordering;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -73,6 +75,7 @@ async fn setup() -> (
         chat_repo,
         Arc::new(crate::infra::db::repo::message_attachment_repo::MessageAttachmentRepository),
         mock_enforcer(),
+        Arc::new(crate::domain::ports::metrics::NoopMetrics),
     );
 
     (svc, ctx, chat_id, tenant_id)
@@ -541,4 +544,86 @@ async fn edit_uses_same_validation_as_retry() {
         .await
         .unwrap_err();
     assert!(matches!(err, MutationError::TurnNotFound { .. }));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Metrics emission
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Successful delete emits `turn_mutation` counter + latency histogram.
+#[tokio::test]
+async fn delete_success_emits_metrics() {
+    let db = inmem_db().await;
+    let db = mock_db_provider(db);
+    let tenant_id = Uuid::new_v4();
+    let ctx = test_security_ctx(tenant_id);
+
+    let chat_repo = Arc::new(repo::chat_repo::ChatRepository::new(
+        modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        },
+    ));
+    let turn_repo = Arc::new(repo::turn_repo::TurnRepository);
+    let message_repo = Arc::new(repo::message_repo::MessageRepository::new(
+        modkit_db::odata::LimitCfg {
+            default: 20,
+            max: 100,
+        },
+    ));
+
+    let chat_id = Uuid::now_v7();
+    let scope = AccessScope::for_tenant(tenant_id);
+    let conn = db.conn().unwrap();
+    chat_repo
+        .create(
+            &conn,
+            &scope,
+            crate::domain::models::Chat {
+                id: chat_id,
+                tenant_id,
+                user_id: ctx.subject_id(),
+                model: "gpt-5.2".to_owned(),
+                title: Some("Test chat".to_owned()),
+                is_temporary: false,
+                created_at: time::OffsetDateTime::now_utc(),
+                updated_at: time::OffsetDateTime::now_utc(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let metrics = Arc::new(TestMetrics::new());
+    let svc = TurnService::new(
+        Arc::clone(&db),
+        turn_repo,
+        message_repo,
+        chat_repo,
+        Arc::new(crate::infra::db::repo::message_attachment_repo::MessageAttachmentRepository),
+        mock_enforcer(),
+        Arc::clone(&metrics) as _,
+    );
+
+    let request_id = create_completed_turn(
+        &svc.db,
+        &*svc.turn_repo,
+        &*svc.message_repo,
+        tenant_id,
+        chat_id,
+        ctx.subject_id(),
+    )
+    .await;
+
+    svc.delete(&ctx, chat_id, request_id).await.unwrap();
+
+    assert_eq!(
+        metrics.turn_mutation.load(Ordering::Relaxed),
+        1,
+        "should record turn_mutation counter"
+    );
+    assert_eq!(
+        metrics.turn_mutation_latency_ms.load(Ordering::Relaxed),
+        1,
+        "should record turn_mutation_latency_ms histogram"
+    );
 }

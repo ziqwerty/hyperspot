@@ -6,6 +6,8 @@ use modkit_security::{AccessScope, SecurityContext};
 use tracing::info;
 use uuid::Uuid;
 
+use crate::domain::ports::MiniChatMetricsPort;
+use crate::domain::ports::metric_labels::{op, result as result_label};
 use crate::domain::repos::{
     ChatRepository, CreateTurnParams, InsertUserMessageParams, MessageAttachmentRepository,
     MessageRepository, TurnRepository,
@@ -119,6 +121,7 @@ pub struct TurnService<
     chat_repo: Arc<CR>,
     message_attachment_repo: Arc<MAR>,
     enforcer: PolicyEnforcer,
+    metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
 impl<
@@ -135,6 +138,7 @@ impl<
         chat_repo: Arc<CR>,
         message_attachment_repo: Arc<MAR>,
         enforcer: PolicyEnforcer,
+        metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         Self {
             db,
@@ -143,6 +147,7 @@ impl<
             chat_repo,
             message_attachment_repo,
             enforcer,
+            metrics,
         }
     }
 
@@ -201,12 +206,15 @@ impl<
             .access_scope(ctx, &resources::CHAT, actions::DELETE_TURN, Some(chat_id))
             .await?;
 
+        let start = std::time::Instant::now();
+
         let turn_repo = Arc::clone(&self.turn_repo);
         let chat_repo = Arc::clone(&self.chat_repo);
         let scope_tx = scope.clone();
         let ctx_clone = ctx.clone();
 
-        self.db
+        let result = self
+            .db
             .transaction(|tx| {
                 Box::pin(async move {
                     let (scope, target) = validate_mutation(
@@ -230,7 +238,13 @@ impl<
                 })
             })
             .await
-            .map_err(unwrap_mutation_err)
+            .map_err(unwrap_mutation_err);
+
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.metrics
+            .record_turn_mutation(op::DELETE, mutation_result_label(&result));
+        self.metrics.record_turn_mutation_latency_ms(op::DELETE, ms);
+        result
     }
 
     // ── Retry ───────────────────────────────────────────────────────────
@@ -242,12 +256,22 @@ impl<
         request_id: Uuid,
     ) -> Result<MutationResult, MutationError> {
         info!(%chat_id, %request_id, "turn retry");
+
         let scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::RETRY_TURN, Some(chat_id))
             .await?;
-        self.mutate_for_stream(ctx, scope, chat_id, request_id, None)
-            .await
+
+        let start = std::time::Instant::now();
+        let result = self
+            .mutate_for_stream(ctx, scope, chat_id, request_id, None)
+            .await;
+
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.metrics
+            .record_turn_mutation(op::RETRY, mutation_result_label(&result));
+        self.metrics.record_turn_mutation_latency_ms(op::RETRY, ms);
+        result
     }
 
     // ── Edit ────────────────────────────────────────────────────────────
@@ -260,12 +284,22 @@ impl<
         new_content: String,
     ) -> Result<MutationResult, MutationError> {
         info!(%chat_id, %request_id, "turn edit");
+
         let scope = self
             .enforcer
             .access_scope(ctx, &resources::CHAT, actions::EDIT_TURN, Some(chat_id))
             .await?;
-        self.mutate_for_stream(ctx, scope, chat_id, request_id, Some(new_content))
-            .await
+
+        let start = std::time::Instant::now();
+        let result = self
+            .mutate_for_stream(ctx, scope, chat_id, request_id, Some(new_content))
+            .await;
+
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        self.metrics
+            .record_turn_mutation(op::EDIT, mutation_result_label(&result));
+        self.metrics.record_turn_mutation_latency_ms(op::EDIT, ms);
+        result
     }
 
     // ── Shared retry/edit transaction ────────────────────────────────────
@@ -468,6 +502,18 @@ async fn validate_mutation<CR: ChatRepository, TR: TurnRepository>(
 // ════════════════════════════════════════════════════════════════════════════
 // Error helpers for transaction boundary crossing
 // ════════════════════════════════════════════════════════════════════════════
+
+/// Map a mutation result to a label for the `result` metric dimension.
+fn mutation_result_label<T>(result: &Result<T, MutationError>) -> &'static str {
+    match result {
+        Ok(_) => result_label::OK,
+        Err(MutationError::NotLatestTurn) => result_label::NOT_LATEST,
+        Err(MutationError::InvalidTurnState { .. }) => result_label::INVALID_STATE,
+        Err(MutationError::Forbidden) => result_label::FORBIDDEN,
+        Err(MutationError::GenerationInProgress) => result_label::GENERATION_IN_PROGRESS,
+        Err(_) => result_label::ERROR,
+    }
+}
 
 fn mutation_to_db_err(e: MutationError) -> modkit_db::DbError {
     modkit_db::DbError::Other(anyhow::Error::new(e))

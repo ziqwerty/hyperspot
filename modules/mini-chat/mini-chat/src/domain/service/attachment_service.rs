@@ -10,6 +10,8 @@ use uuid::Uuid;
 use crate::config::RagConfig;
 use crate::domain::error::DomainError;
 use crate::domain::mime_validation::AttachmentKind;
+use crate::domain::ports::MiniChatMetricsPort;
+use crate::domain::ports::metric_labels::{kind as kind_label, upload_result};
 use crate::domain::ports::{
     AddFileToVectorStoreParams, FileStorageProvider, UploadFileParams, VectorStoreProvider,
 };
@@ -21,6 +23,41 @@ use crate::infra::db::entity::attachment::Model as AttachmentModel;
 use crate::infra::llm::provider_resolver::ProviderResolver;
 
 use super::DbProvider;
+
+// ── RAII guard for attachments_pending gauge ─────────────────────────────
+
+/// Ensures `decrement_attachments_pending` is always called, even on early
+/// returns or `?`-propagation. Call `defuse()` on the happy path to perform
+/// an explicit decrement and disarm the Drop guard.
+#[domain_model]
+struct PendingGuard {
+    metrics: Arc<dyn MiniChatMetricsPort>,
+    armed: bool,
+}
+
+impl PendingGuard {
+    fn new(metrics: &Arc<dyn MiniChatMetricsPort>) -> Self {
+        metrics.increment_attachments_pending();
+        Self {
+            metrics: Arc::clone(metrics),
+            armed: true,
+        }
+    }
+
+    /// Explicit decrement + disarm (happy path).
+    fn defuse(mut self) {
+        self.armed = false;
+        self.metrics.decrement_attachments_pending();
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.metrics.decrement_attachments_pending();
+        }
+    }
+}
 
 // ── Error helpers for transaction boundary crossing ─────────────────────
 // Follows the mutation_to_db_err / unwrap_mutation_err pattern from turn_service.rs.
@@ -80,6 +117,7 @@ pub struct AttachmentService<
     provider_resolver: Arc<ProviderResolver>,
     model_resolver: Arc<dyn ModelResolver>,
     rag_config: RagConfig,
+    metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
 impl<
@@ -101,6 +139,7 @@ impl<
         provider_resolver: Arc<ProviderResolver>,
         model_resolver: Arc<dyn ModelResolver>,
         rag_config: RagConfig,
+        metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         Self {
             db,
@@ -114,6 +153,7 @@ impl<
             provider_resolver,
             model_resolver,
             rag_config,
+            metrics,
         }
     }
 
@@ -435,6 +475,7 @@ impl<
     /// Returns the created attachment row.
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         clippy::cognitive_complexity,
         clippy::cast_precision_loss
     )]
@@ -562,6 +603,15 @@ impl<
             .await
             .map_err(unwrap_mutation_err)?;
 
+        // Metrics: attachment is now pending (in-flight to provider).
+        // PendingGuard ensures decrement on every exit path (Drop-based).
+        let kind_metric = if is_document {
+            kind_label::DOCUMENT
+        } else {
+            kind_label::IMAGE
+        };
+        let pending_guard = PendingGuard::new(&self.metrics);
+
         // 3. Upload to provider (outside TX — avoids holding pool)
         let structured_name = structured_filename(chat_id, attachment_id, validated.mime);
 
@@ -584,6 +634,8 @@ impl<
                 // P1-13: upload failure → CAS set_failed from pending
                 self.try_set_failed(&scope, attachment_id, "pending", "upload_failed")
                     .await;
+                self.metrics
+                    .record_attachment_upload(kind_metric, upload_result::PROVIDER_ERROR);
                 return Err(DomainError::from(e));
             }
         };
@@ -624,6 +676,8 @@ impl<
                     self.try_set_failed(&scope, attachment_id, "uploaded", "vector_store_failed")
                         .await;
                     self.spawn_delete_file(ctx.clone(), &provider_id, &provider_file_id);
+                    self.metrics
+                        .record_attachment_upload(kind_metric, upload_result::PROVIDER_ERROR);
                     return Err(e);
                 }
             };
@@ -650,6 +704,8 @@ impl<
                 self.try_set_failed(&scope, attachment_id, "uploaded", "indexing_failed")
                     .await;
                 self.spawn_delete_file(ctx.clone(), &provider_id, &provider_file_id);
+                self.metrics
+                    .record_attachment_upload(kind_metric, upload_result::PROVIDER_ERROR);
                 return Err(DomainError::from(e));
             }
         }
@@ -669,6 +725,14 @@ impl<
                 return Err(DomainError::not_found("Attachment", attachment_id));
             }
         }
+
+        // Metrics: upload succeeded — defuse guard (explicit decrement + disarm)
+        self.metrics
+            .record_attachment_upload(kind_metric, upload_result::OK);
+        #[allow(clippy::cast_precision_loss)]
+        self.metrics
+            .record_attachment_upload_bytes(kind_metric, size_bytes as f64);
+        pending_guard.defuse();
 
         // Reload final state
         let conn = self.db.conn().map_err(DomainError::from)?;

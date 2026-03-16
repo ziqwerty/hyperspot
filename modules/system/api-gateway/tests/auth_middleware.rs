@@ -10,7 +10,9 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use authn_resolver_sdk::{AuthNResolverClient, AuthNResolverError, AuthenticationResult};
+use authn_resolver_sdk::{
+    AuthNResolverClient, AuthNResolverError, AuthenticationResult, ClientCredentialsRequest,
+};
 use axum::{
     Extension, Json, Router,
     body::Body,
@@ -653,6 +655,15 @@ impl AuthNResolverClient for MockAuthNResolverClient {
         bearer_token: &str,
     ) -> Result<AuthenticationResult, AuthNResolverError> {
         (self.handler)(bearer_token)
+    }
+
+    async fn exchange_client_credentials(
+        &self,
+        _request: &ClientCredentialsRequest,
+    ) -> Result<AuthenticationResult, AuthNResolverError> {
+        Err(AuthNResolverError::Internal(
+            "not implemented in mock".to_owned(),
+        ))
     }
 }
 

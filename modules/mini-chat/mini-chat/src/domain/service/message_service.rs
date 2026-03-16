@@ -9,31 +9,34 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::models::Message;
-use crate::domain::repos::{ChatRepository, MessageRepository};
+use crate::domain::repos::{ChatRepository, MessageRepository, ReactionRepository};
 use crate::infra::db::entity::message::MessageRole;
 
 use super::{DbProvider, actions, resources};
 
 /// Service handling message query operations.
 #[domain_model]
-pub struct MessageService<MR: MessageRepository, CR: ChatRepository> {
+pub struct MessageService<MR: MessageRepository, CR: ChatRepository, RR: ReactionRepository> {
     db: Arc<DbProvider>,
     message_repo: Arc<MR>,
     chat_repo: Arc<CR>,
+    reaction_repo: Arc<RR>,
     enforcer: PolicyEnforcer,
 }
 
-impl<MR: MessageRepository, CR: ChatRepository> MessageService<MR, CR> {
+impl<MR: MessageRepository, CR: ChatRepository, RR: ReactionRepository> MessageService<MR, CR, RR> {
     pub(crate) fn new(
         db: Arc<DbProvider>,
         message_repo: Arc<MR>,
         chat_repo: Arc<CR>,
+        reaction_repo: Arc<RR>,
         enforcer: PolicyEnforcer,
     ) -> Self {
         Self {
             db,
             message_repo,
             chat_repo,
+            reaction_repo,
             enforcer,
         }
     }
@@ -74,6 +77,13 @@ impl<MR: MessageRepository, CR: ChatRepository> MessageService<MR, CR> {
             .batch_attachment_summaries(&conn, &msg_scope, chat_id, &msg_ids)
             .await?;
 
+        // Batch-fetch the current user's reactions for all returned messages.
+        let reaction_scope = scope.tenant_and_owner();
+        let mut reaction_map = self
+            .reaction_repo
+            .batch_by_user(&conn, &reaction_scope, &msg_ids, ctx.subject_id())
+            .await?;
+
         let items: Vec<Message> = page
             .items
             .into_iter()
@@ -83,6 +93,7 @@ impl<MR: MessageRepository, CR: ChatRepository> MessageService<MR, CR> {
                     DomainError::internal("list_by_chat returned message with null request_id")
                 })?;
                 let attachments = att_map.remove(&m.id).unwrap_or_default();
+                let my_reaction = reaction_map.remove(&m.id);
                 Ok(Message {
                     id: m.id,
                     request_id,
@@ -93,6 +104,7 @@ impl<MR: MessageRepository, CR: ChatRepository> MessageService<MR, CR> {
                     },
                     content: m.content,
                     attachments,
+                    my_reaction,
                     model: m.model,
                     input_tokens: if m.input_tokens == 0 {
                         None

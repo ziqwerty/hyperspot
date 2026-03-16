@@ -17,20 +17,20 @@ use super::{DbProvider, actions, resources};
 
 /// Service handling chat CRUD operations.
 #[domain_model]
-pub struct ChatService<CR: ChatRepository> {
+pub struct ChatService<CR: ChatRepository, TSR: ThreadSummaryRepository> {
     db: Arc<DbProvider>,
     chat_repo: Arc<CR>,
     #[allow(dead_code)]
-    thread_summary_repo: Arc<dyn ThreadSummaryRepository>,
+    thread_summary_repo: Arc<TSR>,
     enforcer: PolicyEnforcer,
     model_resolver: Arc<dyn ModelResolver>,
 }
 
-impl<CR: ChatRepository + 'static> ChatService<CR> {
+impl<CR: ChatRepository + 'static, TSR: ThreadSummaryRepository + 'static> ChatService<CR, TSR> {
     pub(crate) fn new(
         db: Arc<DbProvider>,
         chat_repo: Arc<CR>,
-        thread_summary_repo: Arc<dyn ThreadSummaryRepository>,
+        thread_summary_repo: Arc<TSR>,
         enforcer: PolicyEnforcer,
         model_resolver: Arc<dyn ModelResolver>,
     ) -> Self {

@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use modkit_db::secure::{DBRunner, SecureEntityExt, SecureUpdateExt, secure_insert};
 use modkit_security::AccessScope;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveEnum, ColumnTrait, Condition, EntityTrait, Order, QueryFilter, Set};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, Condition, EntityTrait, Order, QueryFilter, QuerySelect, Set,
+    sea_query::LockType,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -227,6 +230,27 @@ impl crate::domain::repos::TurnRepository for TurnRepository {
             .secure()
             .scope_with(scope)
             .order_by(Column::StartedAt, Order::Desc)
+            .one(runner)
+            .await?)
+    }
+
+    async fn find_latest_for_update<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<TurnModel>, DomainError> {
+        Ok(TurnEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .lock(LockType::Update)
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::StartedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
             .one(runner)
             .await?)
     }

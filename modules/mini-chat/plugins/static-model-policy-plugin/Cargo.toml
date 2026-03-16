@@ -15,8 +15,8 @@ workspace = true
 
 [dependencies]
 # Plugin SDK
-mini-chat-sdk = { package = "cf-mini-chat-sdk", path = "../../mini-chat-sdk" }
-types-registry-sdk = { package = "cf-types-registry-sdk", path = "../../../system/types-registry/types-registry-sdk" }
+mini-chat-sdk = { package = "cf-mini-chat-sdk", version = "0.5.3", path = "../../mini-chat-sdk" }
+types-registry-sdk = { package = "cf-types-registry-sdk", version = "0.1.5", path = "../../../system/types-registry/types-registry-sdk" }
 
 # ModKit dependencies
 modkit = { workspace = true }
@@ -24,6 +24,7 @@ modkit-macros = { workspace = true }
 
 # Async runtime
 async-trait = { workspace = true }
+tokio-util = { workspace = true }
 
 # Data structures
 uuid = { workspace = true }
@@ -41,3 +42,6 @@ tracing = { workspace = true }
 
 # Required by modkit::module macro
 inventory = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

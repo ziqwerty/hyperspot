@@ -15,7 +15,7 @@ use modkit_security::SecurityContext;
 use tokio::sync::mpsc;
 use tokio::time::{Interval, interval};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use crate::api::rest::dto::{MessageDto, StreamMessageRequest};
 use crate::api::rest::sse::{StreamEventKind, StreamPhase};
@@ -25,7 +25,7 @@ use crate::infra::db::entity::chat_turn::Model as TurnModel;
 use crate::module::AppServices;
 
 /// GET /mini-chat/v1/chats/{id}/messages
-#[tracing::instrument(skip(svc, ctx, query))]
+#[tracing::instrument(skip(svc, ctx, query), fields(chat_id = %chat_id))]
 pub(crate) async fn list_messages(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<AppServices>>,
@@ -37,10 +37,11 @@ pub(crate) async fn list_messages(
     Ok(Json(page))
 }
 
-/// POST /mini-chat/v1/chats/{id}/messages/stream
+/// POST /mini-chat/v1/chats/{id}/messages:stream
 ///
 /// Pre-stream validation returns JSON errors. On success, opens an SSE
 /// connection and relays events from the provider through a bounded channel.
+#[tracing::instrument(skip(svc, ctx, body), fields(chat_id = %chat_id, turn_request_id))]
 pub(crate) async fn stream_message(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<AppServices>>,
@@ -57,16 +58,24 @@ pub(crate) async fn stream_message(
         .into_response();
     }
 
+    // Resolve request_id early so it's available for error logging below.
+    let request_id = body.request_id.unwrap_or_else(uuid::Uuid::new_v4);
+    tracing::Span::current().record("turn_request_id", tracing::field::display(request_id));
+
     // ── Resolve model + provider from chat ─────────────────────────────
     let chat = match svc.chats.get_chat(&ctx, chat_id).await {
         Ok(c) => c,
         Err(e) => {
-            let status = if e.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
+            let (status, detail) = if e.to_string().contains("not found") {
+                (StatusCode::NOT_FOUND, e.to_string())
             } else {
-                StatusCode::INTERNAL_SERVER_ERROR
+                warn!(error = %e, "failed to fetch chat for stream");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "An internal error occurred".to_owned(),
+                )
             };
-            return Problem::new(status, "Error", e.to_string()).into_response();
+            return Problem::new(status, "Error", detail).into_response();
         }
     };
 
@@ -78,10 +87,14 @@ pub(crate) async fn stream_message(
     {
         Ok(r) => r,
         Err(e) => {
+            warn!(error = %e, model = %selected_model, "model resolution failed");
             return Problem::new(StatusCode::BAD_REQUEST, "Bad Request", e.to_string())
                 .into_response();
         }
     };
+
+    // ── Extract web search flag from DTO ───────────────────────────────
+    let web_search_enabled = body.web_search.as_ref().is_some_and(|c| c.enabled);
 
     // ── Wire up streaming pipeline ─────────────────────────────────────
     let capacity = svc.stream.channel_capacity();
@@ -89,9 +102,7 @@ pub(crate) async fn stream_message(
     let (tx, rx) = mpsc::channel::<StreamEvent>(capacity);
     let cancel = CancellationToken::new();
 
-    let request_id = body.request_id.unwrap_or_else(uuid::Uuid::new_v4);
-
-    info!(chat_id = %chat_id, %request_id, model = %resolved.model_id, provider_id = %resolved.provider_id, "starting SSE stream");
+    info!(model = %resolved.model_id, provider_id = %resolved.provider_id, "starting SSE stream");
 
     // Pre-stream checks + spawn the provider task
     let provider_handle = match svc
@@ -102,6 +113,8 @@ pub(crate) async fn stream_message(
             request_id,
             body.content,
             resolved,
+            web_search_enabled,
+            body.attachment_ids,
             cancel.clone(),
             tx,
         )
@@ -111,15 +124,19 @@ pub(crate) async fn stream_message(
         Err(StreamError::Replay { turn }) => {
             return replay_response(&svc, &selected_model, &turn, ping_secs).await;
         }
-        Err(e) => return stream_error_response(e),
+        Err(e) => return stream_error_response(&e),
     };
 
     // Monitor provider task for panics
-    tokio::spawn(async move {
-        if let Err(e) = provider_handle.await {
-            tracing::error!(error = ?e, "provider task panicked");
+    let monitor_span = tracing::Span::current();
+    tokio::spawn(
+        async move {
+            if let Err(e) = provider_handle.await {
+                tracing::error!(error = ?e, "provider task panicked");
+            }
         }
-    });
+        .instrument(monitor_span),
+    );
 
     // Build the SSE relay stream
     let relay = SseRelay::new(rx, cancel, ping_secs);
@@ -130,24 +147,29 @@ pub(crate) async fn stream_message(
 }
 
 /// Map a [`StreamError`] to an appropriate HTTP error response.
-fn stream_error_response(err: StreamError) -> Response {
+///
+/// Caller is expected to be within an instrumented span that carries
+/// `chat_id` and `turn_request_id` fields.
+#[allow(clippy::cognitive_complexity)]
+fn stream_error_response(err: &StreamError) -> Response {
     match err {
         StreamError::Replay { .. } => {
             // Completed turns are handled by replay_response(); this arm covers
             // the defensive case where Replay leaks through without interception.
             Problem::new(StatusCode::CONFLICT, "Conflict", "Duplicate request_id").into_response()
         }
-        StreamError::Conflict { message, .. } => {
-            Problem::new(StatusCode::CONFLICT, "Conflict", &message).into_response()
+        StreamError::Conflict { message, code } => {
+            info!(conflict_code = %code, "stream request conflict");
+            Problem::new(StatusCode::CONFLICT, "Conflict", message).into_response()
         }
         StreamError::ChatNotFound { .. } => {
             Problem::new(StatusCode::NOT_FOUND, "Not Found", "Chat not found").into_response()
         }
-        StreamError::AuthorizationFailed { ref source } => {
+        StreamError::AuthorizationFailed { source } => {
             warn!(error = %source, "stream authorization failed");
             Problem::new(StatusCode::FORBIDDEN, "Forbidden", "Access denied").into_response()
         }
-        StreamError::TurnCreationFailed { ref source } => {
+        StreamError::TurnCreationFailed { source } => {
             warn!(error = %source, "pre-stream turn creation failed");
             Problem::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -159,9 +181,47 @@ fn stream_error_response(err: StreamError) -> Response {
         StreamError::QuotaExhausted {
             error_code,
             http_status,
+            quota_scope,
         } => {
-            let status = StatusCode::from_u16(http_status).unwrap_or(StatusCode::TOO_MANY_REQUESTS);
-            Problem::new(status, "Quota Exhausted", &error_code).into_response()
+            info!(error_code = %error_code, http_status = *http_status, quota_scope = %quota_scope, "quota exhausted, request rejected");
+            let status =
+                StatusCode::from_u16(*http_status).unwrap_or(StatusCode::TOO_MANY_REQUESTS);
+            // TODO(P2): include `quota_scope` in the response body so clients can
+            // distinguish token vs web_search quota exhaustion (DESIGN.md §5.2).
+            Problem::new(status, error_code, error_code).into_response()
+        }
+        StreamError::WebSearchDisabled => {
+            info!(
+                reason = "kill_switch",
+                "web search disabled via kill switch, request rejected"
+            );
+            Problem::new(
+                StatusCode::BAD_REQUEST,
+                "web_search_disabled",
+                "Web search is currently disabled",
+            )
+            .into_response()
+        }
+        StreamError::InvalidAttachment { code, message } => {
+            info!(code = %code, message = %message, "invalid attachment in request");
+            Problem::new(StatusCode::BAD_REQUEST, code, message).into_response()
+        }
+        StreamError::ContextBudgetExceeded {
+            required_tokens,
+            available_tokens,
+        } => {
+            info!(
+                required_tokens,
+                available_tokens, "context budget exceeded, request rejected"
+            );
+            Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "context_budget_exceeded",
+                format!(
+                    "Context requires {required_tokens} tokens but only {available_tokens} are available"
+                ),
+            )
+            .into_response()
         }
     }
 }
@@ -221,7 +281,7 @@ async fn replay_response(
 /// emits ping keepalives, and respects cancellation.
 ///
 /// Implements `Stream<Item = Result<Event, Infallible>>` for Axum SSE.
-struct SseRelay {
+pub(crate) struct SseRelay {
     rx: mpsc::Receiver<StreamEvent>,
     cancel: CancellationToken,
     phase: StreamPhase,
@@ -232,7 +292,11 @@ struct SseRelay {
 }
 
 impl SseRelay {
-    fn new(rx: mpsc::Receiver<StreamEvent>, cancel: CancellationToken, ping_secs: u64) -> Self {
+    pub(crate) fn new(
+        rx: mpsc::Receiver<StreamEvent>,
+        cancel: CancellationToken,
+        ping_secs: u64,
+    ) -> Self {
         Self {
             rx,
             cancel,
@@ -313,12 +377,16 @@ impl Stream for SseRelay {
             }
             Poll::Ready(None) => {
                 // Channel closed — provider task exited
-                debug!("provider channel closed");
                 this.done = true;
 
                 // If no terminal event was received, emit an error to honour
                 // the SSE contract (streams must end with done or error).
-                if !this.phase.is_terminal() {
+                if this.phase.is_terminal() {
+                    debug!("provider channel closed");
+                } else {
+                    warn!(
+                        "provider channel closed without terminal event - emitting synthetic error"
+                    );
                     let error_event = StreamEvent::Error(crate::domain::stream_events::ErrorData {
                         code: "stream_interrupted".to_owned(),
                         message: "Provider stream ended unexpectedly".to_owned(),

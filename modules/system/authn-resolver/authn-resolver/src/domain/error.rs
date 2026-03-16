@@ -22,6 +22,9 @@ pub enum DomainError {
     #[error("unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("token acquisition failed: {0}")]
+    TokenAcquisitionFailed(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -68,6 +71,7 @@ impl From<AuthNResolverError> for DomainError {
                 gts_id: "unknown".to_owned(),
                 reason: msg,
             },
+            AuthNResolverError::TokenAcquisitionFailed(msg) => Self::TokenAcquisitionFailed(msg),
             AuthNResolverError::Internal(msg) => Self::Internal(msg),
         }
     }
@@ -84,6 +88,7 @@ impl From<DomainError> for AuthNResolverError {
                 Self::ServiceUnavailable(format!("plugin not available for '{gts_id}': {reason}"))
             }
             DomainError::Unauthorized(msg) => Self::Unauthorized(msg),
+            DomainError::TokenAcquisitionFailed(msg) => Self::TokenAcquisitionFailed(msg),
             DomainError::TypesRegistryUnavailable(reason) | DomainError::Internal(reason) => {
                 Self::Internal(reason)
             }

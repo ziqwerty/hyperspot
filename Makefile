@@ -296,15 +296,16 @@ test-macros:
 
 ## Run SQLite integration tests
 test-sqlite:
-	cargo test -p cf-modkit-db --features sqlite,integration
+	cargo test -p cf-modkit-db --features sqlite,integration,preview-outbox
+	cargo build -p cf-modkit-db --examples --features sqlite,preview-outbox
 
 ## Run PostgreSQL integration tests
 test-pg:
-	cargo test -p cf-modkit-db --features pg,integration
+	cargo test -p cf-modkit-db --features pg,integration,preview-outbox
 
 ## Run MySQL integration tests
 test-mysql:
-	cargo test -p cf-modkit-db --features mysql,integration
+	cargo test -p cf-modkit-db --features mysql,integration,preview-outbox
 
 # Run all database integration tests
 test-db: test-sqlite test-pg test-mysql
@@ -312,6 +313,49 @@ test-db: test-sqlite test-pg test-mysql
 ## Run users-info module integration tests
 test-users-info-pg:
 	cargo test -p users-info --features "integration" -- --nocapture
+
+# -------- Benchmarks --------
+
+.PHONY: bench-pg bench-pg-profiler bench-mysql bench-mariadb bench-sqlite bench-db \
+       bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul bench-sqlite-longhaul bench-db-longhaul
+
+## Run outbox throughput benchmarks against PostgreSQL
+bench-pg:
+	cargo bench -p cf-modkit-db --features pg,preview-outbox --bench outbox_throughput -- postgres
+
+## Run outbox throughput benchmarks against MySQL
+bench-mysql:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mysql
+
+## Run outbox throughput benchmarks against MariaDB
+bench-mariadb:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mariadb
+
+## Run outbox throughput benchmarks against SQLite
+bench-sqlite:
+	cargo bench -p cf-modkit-db --features sqlite,preview-outbox --bench outbox_throughput -- sqlite
+
+## Run outbox throughput benchmarks against all database engines
+bench-db: bench-pg bench-mysql bench-mariadb bench-sqlite
+
+## Run long-haul (1M+10M) outbox benchmarks against PostgreSQL
+bench-pg-longhaul:
+	cargo bench -p cf-modkit-db --features pg,preview-outbox --bench outbox_throughput -- postgres_longhaul
+
+## Run long-haul (1M+10M) outbox benchmarks against MySQL
+bench-mysql-longhaul:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mysql_longhaul
+
+## Run long-haul (1M+10M) outbox benchmarks against MariaDB
+bench-mariadb-longhaul:
+	cargo bench -p cf-modkit-db --features mysql,preview-outbox --bench outbox_throughput -- mariadb_longhaul
+
+## Run long-haul (100K 1P) outbox benchmarks against SQLite
+bench-sqlite-longhaul:
+	cargo bench -p cf-modkit-db --features sqlite,preview-outbox --bench outbox_throughput -- sqlite_longhaul
+
+## Run long-haul outbox benchmarks against all database engines
+bench-db-longhaul: bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul bench-sqlite-longhaul
 
 # -------- E2E tests --------
 
@@ -428,7 +472,7 @@ example:
 
 ## Run server with mini-chat module
 mini-chat:
-	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant -- --config config/mini-chat.yaml run
+	cargo run --bin hyperspot-server --features mini-chat,static-authn,static-authz,single-tenant,static-credstore,otel -- --config config/mini-chat.yaml run
 
 oop-example:
 	cargo build -p calculator --features oop_module

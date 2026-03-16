@@ -9,7 +9,7 @@ use crate::api::rest::dto::{ReactionDto, SetReactionReq};
 use crate::module::AppServices;
 
 /// PUT /mini-chat/v1/chats/{id}/messages/{msg_id}/reaction
-#[tracing::instrument(skip(svc, ctx, req_body))]
+#[tracing::instrument(skip(svc, ctx, req_body), fields(chat_id = %chat_id, msg_id = %msg_id))]
 pub(crate) async fn put_reaction(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<AppServices>>,
@@ -24,7 +24,7 @@ pub(crate) async fn put_reaction(
 }
 
 /// DELETE /mini-chat/v1/chats/{id}/messages/{msg_id}/reaction
-#[tracing::instrument(skip(svc, ctx))]
+#[tracing::instrument(skip(svc, ctx), fields(chat_id = %chat_id, msg_id = %msg_id))]
 pub(crate) async fn delete_reaction(
     Extension(ctx): Extension<SecurityContext>,
     Extension(svc): Extension<Arc<AppServices>>,

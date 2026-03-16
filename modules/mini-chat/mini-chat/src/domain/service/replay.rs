@@ -5,10 +5,10 @@
 //! and cannot access `QuotaService`, outbox, provider, or finalization types.
 
 use crate::domain::error::DomainError;
+use crate::domain::llm::Usage;
 use crate::domain::repos::MessageRepository;
 use crate::domain::stream_events::{DeltaData, DoneData, StreamEvent};
 use crate::infra::db::entity::chat_turn::Model as TurnModel;
-use crate::infra::llm::Usage;
 use modkit_security::AccessScope;
 
 use super::DbProvider;
@@ -149,6 +149,16 @@ mod tests {
             unimplemented!()
         }
 
+        async fn find_user_message_by_request_id<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: Uuid,
+        ) -> Result<Option<MessageModel>, DomainError> {
+            unimplemented!()
+        }
+
         async fn find_by_chat_and_request_id<C: DBRunner>(
             &self,
             _: &C,
@@ -192,6 +202,39 @@ mod tests {
             _: &[Uuid],
         ) -> Result<HashMap<Uuid, Vec<crate::domain::models::AttachmentSummary>>, DomainError>
         {
+            unimplemented!()
+        }
+
+        async fn snapshot_boundary<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+        ) -> Result<Option<crate::domain::repos::SnapshotBoundary>, DomainError> {
+            Ok(None)
+        }
+
+        async fn recent_for_context<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: u32,
+            _: Option<crate::domain::repos::SnapshotBoundary>,
+        ) -> Result<Vec<MessageModel>, DomainError> {
+            unimplemented!()
+        }
+
+        async fn recent_after_boundary<C: DBRunner>(
+            &self,
+            _: &C,
+            _: &AccessScope,
+            _: Uuid,
+            _: time::OffsetDateTime,
+            _: Uuid,
+            _: u32,
+            _: Option<crate::domain::repos::SnapshotBoundary>,
+        ) -> Result<Vec<MessageModel>, DomainError> {
             unimplemented!()
         }
     }

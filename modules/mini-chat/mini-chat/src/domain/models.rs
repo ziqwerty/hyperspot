@@ -66,6 +66,7 @@ pub struct Message {
     pub role: String,
     pub content: String,
     pub attachments: Vec<AttachmentSummary>,
+    pub my_reaction: Option<ReactionKind>,
     pub model: Option<String>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -137,4 +138,55 @@ pub struct Reaction {
     pub message_id: Uuid,
     pub kind: ReactionKind,
     pub created_at: OffsetDateTime,
+}
+
+// ── Model Catalog (resolved projection) ──
+
+/// A model resolved from the policy catalog for the current user.
+///
+/// Combines the public display projection with internal routing
+/// metadata (`provider_model_id`, `provider_id`) needed for LLM
+/// API requests. The DTO layer controls which fields are exposed
+/// over the wire.
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModel {
+    pub model_id: String,
+    /// Provider-side model ID (e.g. `"gpt-5.2"`, `"claude-opus-4-6"`). Sent in LLM API requests.
+    pub provider_model_id: String,
+    /// Maps to a key in `MiniChatConfig.providers` (e.g. `"openai"`, `"azure_openai"`).
+    pub provider_id: String,
+    pub display_name: String,
+    pub tier: String,
+    pub multiplier_display: String,
+    pub description: Option<String>,
+    pub multimodal_capabilities: Vec<String>,
+    pub context_window: u32,
+    /// System prompt sent as `instructions` in every LLM request for this model.
+    /// Sourced from `ModelCatalogEntry.system_prompt` (per-model, per-policy-version).
+    pub system_prompt: String,
+}
+
+impl From<&mini_chat_sdk::ModelCatalogEntry> for ResolvedModel {
+    fn from(e: &mini_chat_sdk::ModelCatalogEntry) -> Self {
+        Self {
+            model_id: e.model_id.clone(),
+            provider_model_id: e.provider_model_id.clone(),
+            provider_id: e.provider_id.clone(),
+            display_name: e.display_name.clone(),
+            tier: match e.tier {
+                mini_chat_sdk::ModelTier::Standard => "standard".to_owned(),
+                mini_chat_sdk::ModelTier::Premium => "premium".to_owned(),
+            },
+            multiplier_display: e.multiplier_display.clone(),
+            description: if e.description.is_empty() {
+                None
+            } else {
+                Some(e.description.clone())
+            },
+            multimodal_capabilities: e.multimodal_capabilities.clone(),
+            context_window: e.context_window,
+            system_prompt: e.system_prompt.clone(),
+        }
+    }
 }

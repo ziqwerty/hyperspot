@@ -20,3 +20,19 @@ use modkit::gts::BaseModkitPluginV1;
     properties = ""
 )]
 pub struct MiniChatModelPolicyPluginSpecV1;
+
+/// GTS type definition for mini-chat audit plugin instances.
+///
+/// # Instance ID Format
+///
+/// ```text
+/// gts.x.core.modkit.plugin.v1~<vendor>.<package>.mini_chat_audit.plugin.v1~
+/// ```
+#[struct_to_gts_schema(
+    dir_path = "schemas",
+    base = BaseModkitPluginV1,
+    schema_id = "gts.x.core.modkit.plugin.v1~x.core.mini_chat_audit.plugin.v1~",
+    description = "Mini-Chat Audit plugin specification",
+    properties = ""
+)]
+pub struct MiniChatAuditPluginSpecV1;

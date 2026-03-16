@@ -9,13 +9,13 @@ use crate::infra::db::repo::chat_repo::ChatRepository as OrmChatRepository;
 
 use super::ChatService;
 use crate::domain::service::test_helpers::{
-    inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver, mock_thread_summary_repo,
-    test_security_ctx, test_security_ctx_with_id,
+    MockThreadSummaryRepo, inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver,
+    mock_thread_summary_repo, test_security_ctx, test_security_ctx_with_id,
 };
 
 // ── Test Helpers ──
 
-fn build_service(db: modkit_db::Db) -> ChatService<OrmChatRepository> {
+fn build_service(db: modkit_db::Db) -> ChatService<OrmChatRepository, MockThreadSummaryRepo> {
     let db = mock_db_provider(db);
     let chat_repo = Arc::new(OrmChatRepository::new(modkit_db::odata::LimitCfg {
         default: 20,

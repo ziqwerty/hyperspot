@@ -1,6 +1,7 @@
 use modkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::config::EstimationBudgets;
 use crate::infra::db::entity::quota_usage::PeriodType;
 
 /// Result of preflight reserve evaluation.
@@ -14,6 +15,14 @@ pub enum PreflightDecision {
         reserved_credits_micro: i64,
         policy_version_applied: i64,
         minimal_generation_floor_applied: i32,
+        /// System prompt for the effective model (from `ModelCatalogEntry`).
+        system_prompt: String,
+        /// Context window size of the effective model (tokens).
+        context_window: u32,
+        /// Maximum input tokens of the effective model.
+        max_input_tokens: u32,
+        /// Per-model estimation budgets from the effective model's catalog entry.
+        estimation_budgets: EstimationBudgets,
     },
     Downgrade {
         effective_model: String,
@@ -24,6 +33,14 @@ pub enum PreflightDecision {
         minimal_generation_floor_applied: i32,
         downgrade_from: String,
         downgrade_reason: DowngradeReason,
+        /// System prompt for the effective model (from `ModelCatalogEntry`).
+        system_prompt: String,
+        /// Context window size of the effective model (tokens).
+        context_window: u32,
+        /// Maximum input tokens of the effective model.
+        max_input_tokens: u32,
+        /// Per-model estimation budgets from the effective model's catalog entry.
+        estimation_budgets: EstimationBudgets,
     },
     Reject {
         error_code: String,
@@ -99,6 +116,8 @@ pub struct SettlementInput {
     pub minimal_generation_floor_applied: i32,
     pub settlement_path: SettlementPath,
     pub period_starts: Vec<(PeriodType, time::Date)>,
+    /// Completed web search calls to settle.
+    pub web_search_calls: u32,
 }
 
 /// Classification of the settlement path to take.

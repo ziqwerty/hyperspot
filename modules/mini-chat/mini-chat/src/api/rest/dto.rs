@@ -6,7 +6,11 @@
 //! Stream event types live in `domain::stream_events`; SSE wire conversion
 //! and ordering enforcement live in `api::rest::sse`.
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use crate::domain::models::{AttachmentSummary, ChatDetail, ImgThumbnail};
+use crate::infra::db::entity::attachment::Model as AttachmentModel;
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -75,6 +79,7 @@ pub struct MessageDto {
     pub role: String,
     pub content: String,
     pub attachments: Vec<AttachmentSummaryDto>,
+    pub my_reaction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +102,7 @@ impl From<crate::domain::models::Message> for MessageDto {
                 .into_iter()
                 .map(AttachmentSummaryDto::from)
                 .collect(),
+            my_reaction: m.my_reaction.map(|r| r.as_str().to_owned()),
             model: m.model,
             input_tokens: m.input_tokens,
             output_tokens: m.output_tokens,
@@ -150,6 +156,60 @@ impl From<ImgThumbnail> for ImgThumbnailDto {
     }
 }
 
+/// Full attachment details returned by the GET attachment endpoint.
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct AttachmentDetailDto {
+    pub id: Uuid,
+    pub filename: String,
+    pub content_type: String,
+    pub size_bytes: i64,
+    pub status: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub img_thumbnail: Option<ImgThumbnailDto>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub summary_updated_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+impl From<AttachmentModel> for AttachmentDetailDto {
+    fn from(m: AttachmentModel) -> Self {
+        let img_thumbnail = m
+            .img_thumbnail
+            .zip(m.img_thumbnail_width)
+            .zip(m.img_thumbnail_height)
+            .map(|((bytes, w), h)| ImgThumbnailDto {
+                content_type: "image/webp".to_owned(),
+                width: w,
+                height: h,
+                data_base64: BASE64.encode(&bytes),
+            });
+
+        Self {
+            id: m.id,
+            filename: m.filename,
+            content_type: m.content_type,
+            size_bytes: m.size_bytes,
+            status: m.status.to_string(),
+            kind: m.attachment_kind.to_string(),
+            error_code: m.error_code,
+            doc_summary: m.doc_summary,
+            img_thumbnail,
+            summary_updated_at: m.summary_updated_at,
+            created_at: m.created_at,
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Reaction DTOs
 // ════════════════════════════════════════════════════════════════════════════
@@ -182,10 +242,49 @@ impl From<crate::domain::models::Reaction> for ReactionDto {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Model DTOs
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Response DTO for a single model.
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct ModelDto {
+    pub model_id: String,
+    pub display_name: String,
+    pub tier: String,
+    pub multiplier_display: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub multimodal_capabilities: Vec<String>,
+    pub context_window: u32,
+}
+
+impl From<crate::domain::models::ResolvedModel> for ModelDto {
+    fn from(m: crate::domain::models::ResolvedModel) -> Self {
+        Self {
+            model_id: m.model_id,
+            display_name: m.display_name,
+            tier: m.tier,
+            multiplier_display: m.multiplier_display,
+            description: m.description,
+            multimodal_capabilities: m.multimodal_capabilities,
+            context_window: m.context_window,
+        }
+    }
+}
+
+/// Response DTO for the model list endpoint.
+#[derive(Debug, Clone)]
+#[modkit_macros::api_dto(response)]
+pub struct ModelListDto {
+    pub items: Vec<ModelDto>,
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Streaming request DTOs
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Request body for `POST /v1/chats/{id}/messages/stream`.
+/// Request body for `POST /v1/chats/{id}/messages:stream`.
 #[derive(Debug, Clone, serde::Deserialize, ToSchema)]
 pub struct StreamMessageRequest {
     /// Message content (must be non-empty).

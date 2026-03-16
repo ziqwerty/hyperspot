@@ -2,7 +2,7 @@ use crate::{claims_error::ClaimsError, traits::KeyProvider};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use jsonwebtoken::{DecodingKey, Header, Validation, decode, decode_header};
+use jsonwebtoken::{DecodingKey, Header, decode_header};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -340,27 +340,43 @@ impl JwksKeyProvider {
         keys.get(kid).cloned()
     }
 
-    /// Validate JWT and decode into header + raw claims
+    /// Validate JWT signature and decode claims without re-parsing the header.
+    ///
+    /// Uses `jsonwebtoken::crypto::verify` directly instead of `decode()`,
+    /// because `decode()` internally calls `decode_header()` which fails
+    /// on non-string custom header fields (e.g. `"eap": 1`).
     fn validate_token(
         token: &str,
         key: &DecodingKey,
         header: &Header,
     ) -> Result<Value, ClaimsError> {
-        let mut validation = Validation::new(header.alg);
+        // Enforce exactly three dot-separated segments: header.payload.signature
+        let parts: Vec<&str> = token.splitn(4, '.').collect();
+        if parts.len() != 3 {
+            return Err(ClaimsError::DecodeFailed("Invalid JWT structure".into()));
+        }
+        let signing_input = &token[..parts[0].len() + 1 + parts[1].len()];
+        let payload_b64 = parts[1];
+        let signature = parts[2];
 
-        // Disable all built-in validations - we'll do them separately
-        validation.validate_exp = false;
-        validation.validate_nbf = false;
-        validation.validate_aud = false;
+        // Verify signature over header.payload (the original signing input)
+        let valid =
+            jsonwebtoken::crypto::verify(signature, signing_input.as_bytes(), key, header.alg)
+                .map_err(|e| {
+                    ClaimsError::DecodeFailed(format!("JWT signature verification failed: {e}"))
+                })?;
+        if !valid {
+            return Err(ClaimsError::InvalidSignature);
+        }
 
-        // Don't require any standard claims
-        let empty_claims: &[&str] = &[];
-        validation.set_required_spec_claims(empty_claims);
+        // Decode payload
+        let payload_bytes = URL_SAFE_NO_PAD
+            .decode(payload_b64.trim_end_matches('='))
+            .map_err(|e| ClaimsError::DecodeFailed(format!("JWT payload decode failed: {e}")))?;
+        let claims: Value = serde_json::from_slice(&payload_bytes)
+            .map_err(|e| ClaimsError::DecodeFailed(format!("JWT claims parse failed: {e}")))?;
 
-        let token_data = decode::<Value>(token, key, &validation)
-            .map_err(|e| ClaimsError::DecodeFailed(format!("JWT validation failed: {e}")))?;
-
-        Ok(token_data.claims)
+        Ok(claims)
     }
 }
 
@@ -957,15 +973,13 @@ mod tests {
         // The handler lets header decode succeed; error must come from signature
         // validation, not from header parsing.
         let err = result.expect_err("fake signature should fail validation");
-        match &err {
-            ClaimsError::DecodeFailed(msg) => {
-                assert!(
-                    msg.contains("JWT validation failed"),
-                    "Expected signature-validation error, got: {msg}"
-                );
-            }
-            other => panic!("Expected DecodeFailed, got: {other:?}"),
-        }
+        assert!(
+            matches!(
+                &err,
+                ClaimsError::InvalidSignature | ClaimsError::DecodeFailed(_)
+            ),
+            "Expected signature-related error, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -994,15 +1008,202 @@ mod tests {
         // Handler lets header decode succeed → error must come from signature
         // validation, not from header parsing.
         let err = result.expect_err("fake signature should fail validation");
-        match &err {
-            ClaimsError::DecodeFailed(msg) => {
-                assert!(
-                    msg.contains("JWT validation failed"),
-                    "Expected signature-validation error, got: {msg}"
-                );
-            }
-            other => panic!("Expected DecodeFailed, got: {other:?}"),
-        }
+        assert!(
+            matches!(
+                &err,
+                ClaimsError::InvalidSignature | ClaimsError::DecodeFailed(_)
+            ),
+            "Expected signature-related error, got: {err:?}"
+        );
+    }
+
+    /// RSA private key (PKCS#8 PEM) used to sign test JWTs.
+    /// The matching public-key components (n, e) are served by `signed_jwks_json()`.
+    const TEST_RSA_PRIVATE_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCohcw9B9YK7ULF
+KgrGNJKAH0BH9CpJB03wIkQl6ECCJ/BfmBsNSWwZdnG0cWwwGhsSSSj32AKB+t6W
+44/vi9hv+PHusIRCMNqM/AJ/zA7xau9mNsxS8U8J3olm74vLFtF05hTRmJuefMmz
+mOt4kMP44UeVg0nyFlToa0SmhMxIeFgz2VgktHjHDe/rr/FdrjMwxesz3ezj+Y4k
+YPPrQfMZJTyEd68M+pPkjyg6AkakNSUJp+dZibnRLKcj6Ehz1W3lSGkaQ4YFSXVX
+UCaHWNmPsJHejwKrUA/fbkYi3sLO7cW/4h+b2laWsL9qC4P2RJMbZBzklJoL+WoH
+Lo5zUvo7AgMBAAECggEACrynlBXdOcn/EI/KqvErilUzY8I3NXrtKMkOHXosLf68
+bmLDCngslny45t25HmFzaxlVLmFJW52vs95gy8rVqeCrDWGas5roOcZOpHTMWO5O
+vWztXLV6Ky9OAsxtVC2qf6+vEOGPvKvHsBUkn4RdsAwuYuS//9gTZdF7yL46Q72o
+pJ8bLUZBpqmVNyLxyfbFn8u9j71zMUweB9vOMYAIAv1cYRa/0bVYLIZumcotY822
+B0ny1fLru1gDJt2p1DL9fQTg16pBYr1V0nhoiktS8Lx5PFLMI+NhmalBerqtPN+u
+qqauu9jolmXtydfOP7pTN2sqGFAKlcx55KZlVLK2YQKBgQDaiRxPXnFCPY4yYBxS
+POFJe8UcvoM3d5HGwQfbJ5PHq+YN8NW0ACaox6QQkQYmE9OHriHrVmp4af6erN2K
+zbjmL41E5C4MzEau2ipZWY4GA+lLXomEiHsUD0cfqfL+7Fs6ufiG2nXrWIBXggz8
+8mTdP/LHMPybY0wxoZI5Xij+2wKBgQDFacPh+PhT0U8wu7nSgvQ85ozJN7TWq0KD
+TgWuZ0W6L5OlAAVernYuvvRH/Uy9JqVfX4KLHbcEcdUx8t5usKMf8S3kQyMM8xK+
+KaEYZNOMdA6E9PAJVD8crDQT/QD6/+oHrTTFFKxW7jWLY1ggWXVHk4CxLXBlDnKQ
+xIA5DuhgIQKBgQCA5Km77loi1aeO8r0BjELcUpH52CwQhQeIEMYPbpJtDGhOBKQm
+3IfwuH99/euAfeUfe4cqBPgbOXkiIZcxjRDnQ1ixL1wx1DJEYwzjUjzAM4JgH8xA
+TTc6p6AtftGBpepRAusgrq0qODLKajw63MS88kDBV5VGGRURmNhj2bOYTQKBgHPr
+hiVj/9Wf+6M/KH9vfCFis9rYBi1jxRu7LeTaKXyJwWXLHFwbj7QlVuYK3AvZ7JOT
+TuGHoldOzISW+3v95tuz0GHP9n39Ic1ePoVHd11rLLdv6J9hw+l/SNlP4EqDCZZW
+Y70yRXyKRhDCVhYw0YglGhVv/CarFCTj7fMTSOphAoGBAJcM4H4qmCFLdR9FRQgT
+YJPGcyjWPmm9tlb8M6rSJGPlfpAhKjRVGWwpHPiUnvrW296QKr9+5q43HRcK3qa5
+GU5n8VxYiniVFVMSEpLJgvu7hGq5fmMiRTTot1pOTSXZ1LY6rDQvjsTeGQumb/Eo
+F8gvjIeiwVfp4nDnO2JFexiy
+-----END PRIVATE KEY-----";
+
+    /// JWKS JSON whose public key matches `TEST_RSA_PRIVATE_PEM`.
+    fn signed_jwks_json() -> &'static str {
+        r#"{
+            "keys": [{
+                "kty": "RSA",
+                "kid": "sign-key-1",
+                "use": "sig",
+                "n": "qIXMPQfWCu1CxSoKxjSSgB9AR_QqSQdN8CJEJehAgifwX5gbDUlsGXZxtHFsMBobEkko99gCgfreluOP74vYb_jx7rCEQjDajPwCf8wO8WrvZjbMUvFPCd6JZu-LyxbRdOYU0ZibnnzJs5jreJDD-OFHlYNJ8hZU6GtEpoTMSHhYM9lYJLR4xw3v66_xXa4zMMXrM93s4_mOJGDz60HzGSU8hHevDPqT5I8oOgJGpDUlCafnWYm50SynI-hIc9Vt5UhpGkOGBUl1V1Amh1jZj7CR3o8Cq1AP325GIt7Czu3Fv-Ifm9pWlrC_aguD9kSTG2Qc5JSaC_lqBy6Oc1L6Ow",
+                "e": "AQAB",
+                "alg": "RS256"
+            }]
+        }"#
+    }
+
+    /// Build a properly-signed RS256 JWT for testing.
+    fn build_signed_jwt(kid: &str, claims: &serde_json::Value) -> String {
+        let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_PEM)
+            .expect("test RSA PEM should be valid");
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some(kid.to_owned());
+        jsonwebtoken::encode(&header, claims, &encoding_key).expect("JWT signing should succeed")
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_decode_happy_path() {
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(signed_jwks_json());
+        });
+
+        let jwks_url = server.url("/jwks");
+        let provider = test_provider_with_http(&jwks_url);
+
+        let claims = serde_json::json!({
+            "sub": "user-42",
+            "name": "Test User",
+            "iat": 1_700_000_000u64
+        });
+        let token = build_signed_jwt("sign-key-1", &claims);
+
+        let (header, decoded_claims) = provider
+            .validate_and_decode(&token)
+            .await
+            .expect("validate_and_decode should succeed for a properly signed token");
+
+        assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
+        assert_eq!(header.kid.as_deref(), Some("sign-key-1"));
+        assert_eq!(decoded_claims["sub"], "user-42");
+        assert_eq!(decoded_claims["name"], "Test User");
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_decode_with_bearer_prefix() {
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(signed_jwks_json());
+        });
+
+        let jwks_url = server.url("/jwks");
+        let provider = test_provider_with_http(&jwks_url);
+
+        let claims = serde_json::json!({"sub": "user-99"});
+        let token = format!("Bearer {}", build_signed_jwt("sign-key-1", &claims));
+
+        let (_, decoded_claims) = provider
+            .validate_and_decode(&token)
+            .await
+            .expect("should strip Bearer prefix and succeed");
+
+        assert_eq!(decoded_claims["sub"], "user-99");
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_decode_rejects_tampered_payload() {
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(signed_jwks_json());
+        });
+
+        let jwks_url = server.url("/jwks");
+        let provider = test_provider_with_http(&jwks_url);
+
+        let claims = serde_json::json!({"sub": "legit"});
+        let token = build_signed_jwt("sign-key-1", &claims);
+
+        // Tamper with the payload segment
+        let parts: Vec<&str> = token.splitn(3, '.').collect();
+        let tampered_payload = URL_SAFE_NO_PAD.encode(br#"{"sub":"evil"}"#);
+        let tampered_token = format!("{}.{}.{}", parts[0], tampered_payload, parts[2]);
+
+        let err = provider
+            .validate_and_decode(&tampered_token)
+            .await
+            .expect_err("tampered token should fail signature verification");
+
+        assert!(
+            matches!(err, ClaimsError::InvalidSignature),
+            "Expected InvalidSignature, got: {err:?}"
+        );
+    }
+
+    /// Build a JWT with a custom header JSON (for non-string extras), properly signed.
+    fn build_signed_jwt_custom_header(header_json: &str, claims: &serde_json::Value) -> String {
+        let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(TEST_RSA_PRIVATE_PEM)
+            .expect("test RSA PEM should be valid");
+        let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).unwrap());
+        let message = format!("{header_b64}.{payload_b64}");
+        let signature = jsonwebtoken::crypto::sign(
+            message.as_bytes(),
+            &encoding_key,
+            jsonwebtoken::Algorithm::RS256,
+        )
+        .expect("signing should succeed");
+        format!("{message}.{signature}")
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_decode_with_non_string_header_extras() {
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(GET).path("/jwks");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(signed_jwks_json());
+        });
+
+        let jwks_url = server.url("/jwks");
+        let provider = test_provider_with_http(&jwks_url).with_header_extras_stringified();
+
+        let claims = serde_json::json!({"sub": "user-extras"});
+        let header_json = r#"{"alg":"RS256","kid":"sign-key-1","typ":"JWT","eap":1}"#;
+        let token = build_signed_jwt_custom_header(header_json, &claims);
+
+        let (header, decoded_claims) = provider
+            .validate_and_decode(&token)
+            .await
+            .expect("should decode JWT with non-string header extras when handler is set");
+
+        assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
+        assert_eq!(header.kid.as_deref(), Some("sign-key-1"));
+        assert_eq!(header.extras.get("eap").map(String::as_str), Some("1"));
+        assert_eq!(decoded_claims["sub"], "user-extras");
     }
 
     #[test]

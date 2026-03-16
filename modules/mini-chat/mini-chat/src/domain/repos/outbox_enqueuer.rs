@@ -1,7 +1,29 @@
 use mini_chat_sdk::UsageEvent;
 use modkit_db::secure::DBRunner;
+use modkit_macros::domain_model;
+use serde::Serialize;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+
+/// Payload for attachment cleanup outbox events.
+///
+/// Enqueued within the delete transaction so cleanup workers can
+/// remove provider-side files and vector store entries asynchronously.
+#[domain_model]
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentCleanupEvent {
+    pub event_type: String,
+    pub tenant_id: Uuid,
+    pub chat_id: Uuid,
+    pub attachment_id: Uuid,
+    pub provider_file_id: Option<String>,
+    pub vector_store_id: Option<String>,
+    pub storage_backend: String,
+    pub attachment_kind: String,
+    pub deleted_at: OffsetDateTime,
+}
 
 /// Domain-layer abstraction for enqueuing outbox events within a transaction.
 ///
@@ -15,7 +37,7 @@ use crate::domain::error::DomainError;
 /// `Vec<u8>` payloads. Mini-Chat needs a domain-oriented interface that:
 /// - Accepts a typed `UsageEvent` (from `mini-chat-sdk`; serialized by the implementation)
 /// - Resolves the queue name and partition from tenant context
-/// - Participates in the caller's transaction via `&impl DBRunner`
+/// - Participates in the caller's transaction via `&dyn DBRunner`
 /// - Returns domain errors, not infra-level `OutboxError`
 ///
 /// # Payload type
@@ -26,14 +48,11 @@ use crate::domain::error::DomainError;
 ///
 /// # Implementation note
 ///
-/// The infra implementation (`InfraOutboxEnqueuer`) will hold an
-/// `Arc<modkit_db::outbox::Outbox>` and call `outbox.enqueue(runner, ...)`
+/// The infra implementation (`InfraOutboxEnqueuer`) holds an
+/// `Arc<modkit_db::outbox::Outbox>` and calls `outbox.enqueue(runner, ...)`
 /// within the finalization transaction. The `Outbox::flush()` notification
 /// is sent after the transaction commits (by the finalization service).
-// TODO(P4): implement InfraOutboxEnqueuer backed by modkit_db::outbox::Outbox
-// TODO(P4): Wire into FinalizationService once modkit_db::outbox is merged.
 #[async_trait::async_trait]
-#[allow(dead_code)]
 pub trait OutboxEnqueuer: Send + Sync {
     /// Enqueue a usage event within the caller's transaction.
     ///
@@ -47,9 +66,29 @@ pub trait OutboxEnqueuer: Send + Sync {
     /// transaction — the outbox enqueue is only reached by the CAS winner.
     ///
     /// Returns `Ok(())` on success. Returns `Err` on database error.
-    async fn enqueue_usage_event<C: DBRunner>(
+    async fn enqueue_usage_event(
         &self,
-        runner: &C,
+        runner: &(dyn DBRunner + Sync),
         event: UsageEvent,
     ) -> Result<(), DomainError>;
+
+    /// Enqueue an attachment cleanup event within the caller's transaction.
+    ///
+    /// Called during the delete-attachment transaction to schedule async
+    /// cleanup of provider-side resources (file deletion, vector store removal).
+    async fn enqueue_attachment_cleanup(
+        &self,
+        runner: &(dyn DBRunner + Sync),
+        event: AttachmentCleanupEvent,
+    ) -> Result<(), DomainError>;
+
+    /// Notify the outbox sequencer that new events are available.
+    ///
+    /// Called after the transaction that contains `enqueue_usage_event` commits.
+    /// Multiple flush calls coalesce — calling flush 10 times results in at most
+    /// one sequencer wakeup.
+    ///
+    /// This is outbox-wide: it wakes the sequencer for ALL registered queues,
+    /// so a single flush call suffices regardless of which queue was written to.
+    fn flush(&self);
 }

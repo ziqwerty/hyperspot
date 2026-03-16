@@ -88,6 +88,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           }
@@ -116,6 +119,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -154,6 +160,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -170,6 +179,9 @@
         "responses": {
           "204": {
             "description": "Chat deleted. Cleanup of external resources is asynchronous."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -227,6 +239,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -246,7 +261,7 @@
         "operationId": "sendMessage",
         "tags": ["messages"],
         "summary": "Send message and receive streamed AI response",
-        "description": "Sends a user message and opens an SSE stream for the assistant response. If `request_id` matches an active generation, returns 409 Conflict (JSON, no SSE). If `request_id` matches a completed generation, replays the response as SSE (side-effect-free: no new quota reserve, no billing events).\n\nThe optional `web_search` parameter enables web search for this turn (disabled by default, backward compatible).\n\n**SSE event ordering (P1)**: `ping* delta* tool* citations? (done | error)`. `delta` and `tool` may interleave; at most one `citations` event, emitted after all `delta` events and before the terminal event.\n\nExactly one terminal event (`done` or `error`) ends the stream.\n\n**SSE event types and payloads**:\n- `event: ping` — keepalive, payload: `{}`. Clients MUST ignore.\n- `event: delta` — incremental text. Payload: `SseDeltaEvent`.\n- `event: tool` — tool activity (file_search, web_search at P1). Payload: `SseToolEvent`.\n- `event: citations` — source references (file and web). Payload: `SseCitationsEvent`.\n- `event: done` — terminal success with usage and quota_decision. Emitted for both full completions and truncated-but-successful completions (provider `response.incomplete`). Payload: `SseDoneEvent`.\n- `event: error` — terminal failure. Payload: `SseErrorEvent`.\n\nSee component schemas for payload definitions.\n\n**Pre-stream errors**: If validation, authorization, or quota preflight fails before streaming, a JSON error response with the appropriate HTTP status is returned and no SSE stream is opened.\n\n**Cancellation**: If the client disconnects mid-stream, the server cancels the in-flight provider request and applies a bounded best-effort debit for quota. No SSE error event is emitted (the stream is already broken). The Turn Status API is authoritative for final state after disconnect.",
+        "description": "Sends a user message and opens an SSE stream for the assistant response. If `request_id` matches an active generation, returns 409 Conflict (JSON, no SSE). If `request_id` matches a completed generation, replays the response as SSE (side-effect-free: no new quota reserve, no billing events).\n\nThe optional `web_search` parameter enables web search for this turn (disabled by default, backward compatible).\n\n**Attachment fields**: `attachment_ids` identifies attachments explicitly attached to this message (persisted into `message_attachments`, returned in message `attachments[]`; images included in multimodal input for the current turn). In P1, retrieval always covers all documents in the chat vector store — `attachment_ids` does not scope or filter retrieval. `file_search` is only included when the chat has at least one ready document attachment.\n\n**SSE event ordering (P1)**: `ping* (delta | tool)* citations? (done | error)`. `delta` and `tool` may interleave; at most one `citations` event, emitted after all `delta` events and before the terminal event.\n\nExactly one terminal event (`done` or `error`) ends the stream.\n\n**SSE event types and payloads**:\n- `event: ping` — keepalive, payload: `{}`. Clients MUST ignore.\n- `event: delta` — incremental text. Payload: `SseDeltaEvent`.\n- `event: tool` — tool activity (file_search, web_search at P1). Payload: `SseToolEvent`.\n- `event: citations` — source references (file and web). Payload: `SseCitationsEvent`.\n- `event: done` — terminal success with usage and quota_decision. Emitted for both full completions and truncated-but-successful completions (provider `response.incomplete`). Payload: `SseDoneEvent`.\n- `event: error` — terminal failure. Payload: `SseErrorEvent`.\n\nSee component schemas for payload definitions.\n\n**Pre-stream errors**: If validation, authorization, or quota preflight fails before streaming, a JSON error response with the appropriate HTTP status is returned and no SSE stream is opened.\n\n**Cancellation**: If the client disconnects mid-stream, the server cancels the in-flight provider request and applies a bounded best-effort debit for quota. No SSE error event is emitted (the stream is already broken). The Turn Status API is authoritative for final state after disconnect.",
         "requestBody": {
           "required": true,
           "content": {
@@ -254,11 +269,25 @@
               "schema": {
                 "$ref": "#/components/schemas/SendMessageRequest"
               },
-              "example": {
-                "content": "What does the document say about Q3 revenue?",
-                "request_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-                "attachment_ids": ["c3d4e5f6-7890-4abc-def1-234567890abc"],
-                "web_search": {"enabled": false}
+              "examples": {
+                "document_question": {
+                  "summary": "Question answered via chat-scoped document retrieval",
+                  "value": {
+                    "content": "What does the document say about Q3 revenue?",
+                    "request_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+                  }
+                },
+                "image_with_document_attachment": {
+                  "summary": "Image in multimodal input + document attached to message",
+                  "value": {
+                    "content": "Compare this chart with the annual report highlights.",
+                    "request_id": "a1b2c3d4-5678-4def-9012-abcdef345678",
+                    "attachment_ids": [
+                      "aaaa1111-2222-4333-8444-555566667777",
+                      "bbbb1111-2222-4333-8444-555566667777"
+                    ]
+                  }
+                }
               }
             }
           }
@@ -269,8 +298,14 @@
             "content": {
               "text/event-stream": {
                 "schema": {
-                  "type": "string",
-                  "description": "Server-Sent Events stream. Each event has `event:` type and `data:` JSON payload. See SseDeltaEvent, SseToolEvent, SseCitationsEvent, SseDoneEvent, SseErrorEvent schemas."
+                  "description": "Server-Sent Events stream. Each line is `event: <type>\\ndata: <JSON>\\n\\n`. Event ordering (P1): `ping* (delta | tool)* citations? (done | error)`. Exactly one terminal event ends the stream.",
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/SseDeltaEvent" },
+                    { "$ref": "#/components/schemas/SseToolEvent" },
+                    { "$ref": "#/components/schemas/SseCitationsEvent" },
+                    { "$ref": "#/components/schemas/SseDoneEvent" },
+                    { "$ref": "#/components/schemas/SseErrorEvent" }
+                  ]
                 }
               }
             },
@@ -298,6 +333,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -336,11 +374,14 @@
             }
           },
           "429": {
-            "description": "Quota or rate limit exceeded. Code: `quota_exceeded` (with `quota_scope`: `tokens` or `web_search`) for user quota exhaustion (always pre-stream), or `rate_limited` for upstream provider throttling after OAGW retry exhaustion. `rate_limited` may also appear as a terminal SSE `event: error` if the provider returns 429 mid-stream (HTTP status remains 200 in that case). Clients MUST use the `code` field to distinguish the two.",
+            "description": "Quota or rate limit exceeded. Code: `quota_exceeded` (with mandatory `quota_scope`: `tokens`, `web_search`, or `image_inputs`) for user quota exhaustion (always pre-stream), or `rate_limited` for upstream provider throttling after OAGW retry exhaustion. `rate_limited` may also appear as a terminal SSE `event: error` if the provider returns 429 mid-stream (HTTP status remains 200 in that case). Clients MUST use the `code` field to distinguish the two.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/QuotaExceededError" },
+                    { "$ref": "#/components/schemas/GenericError" }
+                  ]
                 }
               }
             }
@@ -406,7 +447,7 @@
                   "$ref": "#/components/schemas/Attachment"
                 },
                 "example": {
-                  "attachment_id": "c3d4e5f6-7890-4abc-def1-234567890abc",
+                  "id": "c3d4e5f6-7890-4abc-def1-234567890abc",
                   "status": "pending",
                   "kind": "document",
                   "filename": "Q3_Report.pdf",
@@ -418,6 +459,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -535,6 +579,7 @@
                           "img_thumbnail": null
                         }
                       ],
+                      "my_reaction": null,
                       "created_at": "2025-06-15T10:35:30Z"
                     },
                     {
@@ -546,6 +591,7 @@
                       "input_tokens": 500,
                       "output_tokens": 120,
                       "attachments": [],
+                      "my_reaction": "like",
                       "created_at": "2025-06-15T10:35:45Z"
                     }
                   ],
@@ -557,6 +603,9 @@
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -593,7 +642,7 @@
                   "document_attachment": {
                     "summary": "Document attachment (ready, with summary)",
                     "value": {
-                      "attachment_id": "c3d4e5f6-7890-4abc-def1-234567890abc",
+                      "id": "c3d4e5f6-7890-4abc-def1-234567890abc",
                       "status": "ready",
                       "kind": "document",
                       "filename": "Q3_Report.pdf",
@@ -609,7 +658,7 @@
                   "image_attachment": {
                     "summary": "Image attachment (ready, with thumbnail preview)",
                     "value": {
-                      "attachment_id": "d4e5f6a7-8901-4abc-def1-234567890abd",
+                      "id": "d4e5f6a7-8901-4abc-def1-234567890abd",
                       "status": "ready",
                       "kind": "image",
                       "filename": "architecture_diagram.png",
@@ -631,11 +680,44 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAttachment",
+        "tags": ["attachments"],
+        "summary": "Delete an attachment from the chat",
+        "description": "Deletes an attachment if it is not referenced by any submitted message. If the attachment is referenced by a submitted message, the operation is rejected with 409 Conflict (attachment_locked). For eligible attachments, the attachment is soft-deleted locally and immediately removed from future retrieval and chat metadata. Provider-side file deletion and vector-store cleanup are performed asynchronously via background workers and are not required to complete before the API returns 204 No Content. Re-deleting an already-deleted attachment is idempotent and returns 204.",
+        "responses": {
+          "204": {
+            "description": "Attachment deleted successfully. No content returned."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Attachment cannot be deleted because it is referenced by a submitted message. Code: `attachment_locked`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -672,6 +754,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -684,7 +769,7 @@
         "operationId": "editTurn",
         "tags": ["turns"],
         "summary": "Edit the last user turn and regenerate response",
-        "description": "Replaces the content of the last user message and generates a new assistant response via SSE. The previous turn is soft-deleted with `replaced_by_request_id` set. Original attachment associations are preserved (copied to the new user message via `message_attachments`). Only the most recent non-deleted turn in a terminal state may be edited.",
+        "description": "Replaces the content of the last user message and generates a new assistant response via SSE. The previous turn is soft-deleted with `replaced_by_request_id` set. The server generates a new `request_id` for the new turn; the old `request_id` becomes replay-only (a completed `request_id` always returns the previously stored result). Original attachment associations from `attachment_ids` are preserved (copied to the new user message via `message_attachments`). Retrieval for the edited turn operates over the entire chat vector store (P1). Only the most recent non-deleted turn in a terminal state may be edited.",
         "requestBody": {
           "required": true,
           "content": {
@@ -704,8 +789,14 @@
             "content": {
               "text/event-stream": {
                 "schema": {
-                  "type": "string",
-                  "description": "Server-Sent Events stream. See sendMessage operation for event types."
+                  "description": "Server-Sent Events stream. Each line is `event: <type>\\ndata: <JSON>\\n\\n`. Event ordering (P1): `ping* (delta | tool)* citations? (done | error)`. Exactly one terminal event ends the stream.",
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/SseDeltaEvent" },
+                    { "$ref": "#/components/schemas/SseToolEvent" },
+                    { "$ref": "#/components/schemas/SseCitationsEvent" },
+                    { "$ref": "#/components/schemas/SseDoneEvent" },
+                    { "$ref": "#/components/schemas/SseErrorEvent" }
+                  ]
                 }
               }
             }
@@ -720,6 +811,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -727,7 +821,7 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "Target is not the most recent turn. Code: `not_latest_turn`.",
+            "description": "Conflict. Codes: `not_latest_turn` (target request_id is not the most recent turn) or `generation_in_progress` (another turn is already running for this chat, including concurrent edit race).",
             "content": {
               "application/json": {
                 "schema": {
@@ -737,11 +831,14 @@
             }
           },
           "429": {
-            "description": "Quota or rate limit exceeded for regeneration. Code: `quota_exceeded` (`quota_scope`: `tokens`) for user quota exhaustion (always pre-stream), or `rate_limited` for upstream provider throttling. `rate_limited` may also appear as a terminal SSE `event: error` mid-stream (HTTP 200). Same semantics as sendMessage.",
+            "description": "Quota or rate limit exceeded for regeneration. Code: `quota_exceeded` (with mandatory `quota_scope`: `tokens` or `image_inputs`) for user quota exhaustion (always pre-stream), or `rate_limited` for upstream provider throttling. `rate_limited` may also appear as a terminal SSE `event: error` mid-stream (HTTP 200). Same semantics as sendMessage.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/QuotaExceededError" },
+                    { "$ref": "#/components/schemas/GenericError" }
+                  ]
                 }
               }
             }
@@ -794,19 +891,8 @@
         "summary": "Delete the last turn",
         "description": "Soft-deletes the most recent turn (user message + assistant response). Only the latest non-deleted turn in a terminal state may be deleted. No replacement turn is created.",
         "responses": {
-          "200": {
-            "description": "Turn deleted.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TurnDeleteResponse"
-                },
-                "example": {
-                  "request_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-                  "deleted": true
-                }
-              }
-            }
+          "204": {
+            "description": "Turn deleted."
           },
           "400": {
             "description": "Turn not in terminal state. Code: `invalid_turn_state`.",
@@ -818,6 +904,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -825,7 +914,7 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "Target is not the most recent turn. Code: `not_latest_turn`.",
+            "description": "Conflict. Codes: `not_latest_turn` (target request_id is not the most recent turn) or `generation_in_progress` (another turn is already running for this chat).",
             "content": {
               "application/json": {
                 "schema": {
@@ -837,7 +926,7 @@
         }
       }
     },
-    "/v1/chats/{id}/turns/{request_id}:retry": {
+    "/v1/chats/{id}/turns/{request_id}/retry": {
       "parameters": [
         {
           "$ref": "#/components/parameters/ChatId"
@@ -850,15 +939,25 @@
         "operationId": "retryTurn",
         "tags": ["turns"],
         "summary": "Retry the last turn",
-        "description": "Soft-deletes the previous turn and re-submits the original user message (including any attachment associations, copied to the new user message via `message_attachments`) for a new assistant response via SSE. Only the most recent non-deleted turn in a terminal state may be retried.",
+        "description": "Soft-deletes the previous turn and re-submits the original user message (including any attachment associations from `attachment_ids`, copied to the new user message via `message_attachments`) for a new assistant response via SSE. The server generates a new `request_id` for the new turn; the old `request_id` becomes replay-only (a completed `request_id` always returns the previously stored result). Retrieval for the retried turn operates over the entire chat vector store (P1). Only the most recent non-deleted turn in a terminal state may be retried. No request body is required; the original user message content and attachment associations are reused automatically.",
+        "requestBody": {
+          "description": "No request body. The server automatically reuses the original user message content and attachment associations.",
+          "required": false
+        },
         "responses": {
           "200": {
             "description": "SSE stream with new assistant response. Same event contract as sendMessage.",
             "content": {
               "text/event-stream": {
                 "schema": {
-                  "type": "string",
-                  "description": "Server-Sent Events stream. See sendMessage operation for event types."
+                  "description": "Server-Sent Events stream. Each line is `event: <type>\\ndata: <JSON>\\n\\n`. Event ordering (P1): `ping* (delta | tool)* citations? (done | error)`. Exactly one terminal event ends the stream.",
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/SseDeltaEvent" },
+                    { "$ref": "#/components/schemas/SseToolEvent" },
+                    { "$ref": "#/components/schemas/SseCitationsEvent" },
+                    { "$ref": "#/components/schemas/SseDoneEvent" },
+                    { "$ref": "#/components/schemas/SseErrorEvent" }
+                  ]
                 }
               }
             }
@@ -873,6 +972,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -880,7 +982,7 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "Target is not the most recent turn. Code: `not_latest_turn`.",
+            "description": "Conflict. Codes: `not_latest_turn` (target request_id is not the most recent turn) or `generation_in_progress` (another turn is already running for this chat, including concurrent retry race).",
             "content": {
               "application/json": {
                 "schema": {
@@ -890,11 +992,14 @@
             }
           },
           "429": {
-            "description": "Quota or rate limit exceeded for regeneration. Code: `quota_exceeded` (`quota_scope`: `tokens`) for user quota exhaustion (always pre-stream), or `rate_limited` for upstream provider throttling. `rate_limited` may also appear as a terminal SSE `event: error` mid-stream (HTTP 200). Same semantics as sendMessage.",
+            "description": "Quota or rate limit exceeded for regeneration. Code: `quota_exceeded` (with mandatory `quota_scope`: `tokens` or `image_inputs`) for user quota exhaustion (always pre-stream), or `rate_limited` for upstream provider throttling. `rate_limited` may also appear as a terminal SSE `event: error` mid-stream (HTTP 200). Same semantics as sendMessage.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/QuotaExceededError" },
+                    { "$ref": "#/components/schemas/GenericError" }
+                  ]
                 }
               }
             }
@@ -955,6 +1060,9 @@
               }
             }
           },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "403": {
             "$ref": "#/components/responses/Forbidden"
           },
@@ -978,6 +1086,9 @@
         "responses": {
           "204": {
             "description": "Reaction removed (or was already absent)."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
@@ -1242,7 +1353,9 @@
               "provider_timeout",
               "not_latest_turn",
               "invalid_turn_state",
-              "invalid_reaction_target"
+              "invalid_reaction_target",
+              "attachment_locked",
+              "web_search_calls_exceeded"
             ]
           },
           "message": {
@@ -1254,7 +1367,7 @@
       "QuotaExceededError": {
         "type": "object",
         "required": ["code", "message", "quota_scope"],
-        "description": "Error response for quota exhaustion. The quota_scope field is REQUIRED and distinguishes token quota exhaustion, upload quota exhaustion, and web search quota exhaustion. No provider identifiers in any field.",
+        "description": "Error response for quota exhaustion. The quota_scope field is REQUIRED and distinguishes token quota exhaustion, upload quota exhaustion, web search quota exhaustion, and image input quota exhaustion. No provider identifiers in any field.",
         "properties": {
           "code": {
             "type": "string",
@@ -1266,8 +1379,8 @@
           },
           "quota_scope": {
             "type": "string",
-            "enum": ["tokens", "uploads", "web_search"],
-            "description": "Distinguishes token quota exhaustion (tokens), upload quota exhaustion (uploads), and web search quota exhaustion (web_search). Clients MUST use this field, not message parsing, to determine quota scope."
+            "enum": ["tokens", "uploads", "web_search", "image_inputs"],
+            "description": "Distinguishes token quota exhaustion (tokens), upload quota exhaustion (uploads), web search quota exhaustion (web_search), and image input quota exhaustion (image_inputs). Clients MUST use this field, not message parsing, to determine quota scope."
           }
         }
       },
@@ -1324,7 +1437,7 @@
       },
       "Message": {
         "type": "object",
-        "required": ["id", "request_id", "role", "content", "attachments", "created_at"],
+        "required": ["id", "request_id", "role", "content", "attachments", "my_reaction", "created_at"],
         "description": "A single message in a chat (user, assistant, or system).",
         "properties": {
           "id": {
@@ -1362,6 +1475,11 @@
             },
             "description": "Always-present list of attachment summaries associated with this message. Contains lightweight metadata sufficient for UI rendering (kind, filename, status, thumbnail). Empty array when no attachments. Full attachment details (doc_summary, size_bytes, content_type, error_code) are available via GET /v1/chats/{id}/attachments/{attachment_id}."
           },
+          "my_reaction": {
+            "type": ["string", "null"],
+            "enum": ["like", "dislike", null],
+            "description": "The requesting user's reaction on this message. Null when no reaction exists or when the message role is not assistant (only assistant messages support reactions)."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -1370,12 +1488,13 @@
       },
       "Attachment": {
         "type": "object",
-        "required": ["attachment_id", "status", "kind", "filename", "content_type", "size_bytes", "created_at"],
+        "required": ["id", "status", "kind", "filename", "content_type", "size_bytes", "created_at"],
         "description": "File attachment (document or image) on a chat.",
         "properties": {
-          "attachment_id": {
+          "id": {
             "type": "string",
-            "format": "uuid"
+            "format": "uuid",
+            "description": "Attachment UUID."
           },
           "status": {
             "type": "string",
@@ -1456,20 +1575,6 @@
           }
         }
       },
-      "TurnDeleteResponse": {
-        "type": "object",
-        "required": ["request_id", "deleted"],
-        "properties": {
-          "request_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "deleted": {
-            "type": "boolean",
-            "const": true
-          }
-        }
-      },
       "ReactionResponse": {
         "type": "object",
         "required": ["message_id", "reaction", "created_at"],
@@ -1519,7 +1624,7 @@
       "SendMessageRequest": {
         "type": "object",
         "required": ["content"],
-        "description": "Request body for sending a message. Opens an SSE stream on success.",
+        "description": "Request body for sending a message. Opens an SSE stream on success. `attachment_ids` identifies attachments explicitly attached to this message (persisted, returned in message attachments array). In P1, retrieval always covers all documents in the chat vector store — `attachment_ids` does not scope or filter retrieval.",
         "properties": {
           "content": {
             "type": "string",
@@ -1536,7 +1641,9 @@
               "type": "string",
               "format": "uuid"
             },
-            "description": "Attachment IDs (images or documents) to include in this turn. Attachments must belong to this chat, must have status=ready, and are validated after effective model capability resolution."
+            "uniqueItems": true,
+            "maxItems": 20,
+            "description": "Attachment IDs (images or documents) explicitly attached/referenced on the current user message. Persisted into `message_attachments` and returned in the message `attachments` array. Images are turn-local multimodal input only; uploaded images are not implicitly reused on later turns. In P1, `attachment_ids` does not scope or filter retrieval — retrieval always covers all documents in the chat vector store. IDs MUST be unique within the array; duplicates are rejected with 400. Attachments must belong to this chat, must have status=ready, and are validated before any provider call or quota reserve. Per-turn image input limit: configurable (default: 4); per-user daily image input limit: configurable (default: 50). Requests exceeding either limit are rejected as a whole."
           },
           "web_search": {
             "$ref": "#/components/schemas/WebSearchOption"
@@ -1546,7 +1653,7 @@
       "EditTurnRequest": {
         "type": "object",
         "required": ["content"],
-        "description": "Request body for editing the last user turn. Original attachment associations are preserved automatically (copied via message_attachments).",
+        "description": "Request body for editing the last user turn. Original attachment associations from `attachment_ids` are preserved automatically (copied via message_attachments). Retrieval for the edited turn operates over the entire chat vector store (P1).",
         "properties": {
           "content": {
             "type": "string",
@@ -1622,7 +1729,7 @@
       "CitationItem": {
         "type": "object",
         "required": ["source", "title", "snippet"],
-        "description": "A single citation reference.",
+        "description": "A single citation reference. When source=\"file\", attachment_id is required. When source=\"web\", url is required.",
         "properties": {
           "source": {
             "type": "string",
@@ -1635,23 +1742,19 @@
           "url": {
             "type": "string",
             "format": "uri",
-            "description": "URL for web sources. Present when source=\"web\"."
+            "description": "URL for web sources. Required when source=\"web\"."
           },
           "attachment_id": {
             "type": "string",
             "format": "uuid",
-            "description": "Internal attachment ID. The only file identifier exposed to clients."
+            "description": "Internal attachment ID. Required when source=\"file\". The only file identifier exposed to clients."
           },
           "span": {
             "type": "object",
             "description": "Reserved for mapping citations to character positions in final assistant text.",
             "properties": {
-              "start": {
-                "type": "integer"
-              },
-              "end": {
-                "type": "integer"
-              }
+              "start": { "type": "integer" },
+              "end": { "type": "integer" }
             }
           },
           "snippet": {
@@ -1664,6 +1767,15 @@
             "maximum": 1,
             "description": "Relevance score."
           }
+        },
+        "if": {
+          "properties": { "source": { "const": "file" } }
+        },
+        "then": {
+          "required": ["attachment_id"]
+        },
+        "else": {
+          "required": ["url"]
         }
       },
       "SseDoneEvent": {
@@ -1700,7 +1812,28 @@
             "type": "string",
             "enum": ["premium_quota_exhausted", "force_standard_tier", "disable_premium_tier", "model_disabled"],
             "description": "Why downgrade occurred. Present only when quota_decision=\"downgrade\". Values: premium_quota_exhausted (user quota exhausted); force_standard_tier (operator kill switch: premium tier forcibly disabled for this tenant); disable_premium_tier (operator kill switch: premium tier globally disabled); model_disabled (operator kill switch: selected model global_enabled=false)."
+          },
+          "completion_signal": {
+            "type": ["object", "null"],
+            "description": "Non-fatal completion signal. Null for normal completion. For truncated responses (provider `response.incomplete`) contains the truncation reason. Not an error indicator — the turn outcome is still `completed`.",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["incomplete"]
+              },
+              "reason": {
+                "type": "string",
+                "description": "Truncation reason from the canonical CompletionSignalReason enum (e.g. \"max_tokens\", \"content_filter\")."
+              }
+            },
+            "required": ["kind"]
           }
+        },
+        "if": {
+          "properties": { "quota_decision": { "const": "downgrade" } }
+        },
+        "then": {
+          "required": ["downgrade_from", "downgrade_reason"]
         }
       },
       "SseUsage": {
@@ -1863,8 +1996,8 @@
       },
       "Model": {
         "type": "object",
-        "required": ["model_id", "display_name", "provider", "tier", "multiplier_display", "multimodal_capabilities", "context_window"],
-        "description": "A model visible to the current user. Does NOT expose provider deployment IDs, credit multipliers, policy_version, max_output, or is_default.",
+        "required": ["model_id", "display_name", "tier", "multiplier_display", "multimodal_capabilities", "context_window"],
+        "description": "A model visible to the current user. Does NOT expose provider, provider deployment IDs, credit multipliers, policy_version, max_output, or is_default.",
         "properties": {
           "model_id": {
             "type": "string",
@@ -1873,10 +2006,6 @@
           "display_name": {
             "type": "string",
             "description": "User-facing name for the model selector UI."
-          },
-          "provider": {
-            "type": "string",
-            "description": "User-facing display name of the provider (e.g., \"OpenAI\", \"Azure OpenAI\"). MUST NOT be a deployment handle, routing identifier, or internal provider key."
           },
           "tier": {
             "type": "string",

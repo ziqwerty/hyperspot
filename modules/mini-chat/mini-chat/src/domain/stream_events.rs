@@ -8,7 +8,7 @@ use modkit_macros::domain_model;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::infra::llm::{Citation, ToolPhase, Usage};
+use crate::domain::llm::{Citation, ToolPhase, Usage};
 
 // ════════════════════════════════════════════════════════════════════════════
 // StreamEvent — domain-level event envelope

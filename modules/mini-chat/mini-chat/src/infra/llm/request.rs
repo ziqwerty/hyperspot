@@ -2,6 +2,10 @@
 //!
 //! [`LlmRequest`] is the common input for all provider adapters. Each adapter
 //! converts it to its provider-specific wire format.
+//!
+//! Core message and tool types (`Role`, `ContentPart`, `LlmMessage`, `LlmTool`)
+//! are defined in [`crate::domain::llm`] and re-exported here for backward
+//! compatibility with existing infra consumers.
 
 use std::marker::PhantomData;
 
@@ -9,91 +13,9 @@ use serde::Serialize;
 
 use super::{NonStreaming, Streaming};
 
-// ════════════════════════════════════════════════════════════════════════════
-// Message types
-// ════════════════════════════════════════════════════════════════════════════
-
-/// A role in the conversation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    User,
-    Assistant,
-    System,
-}
-
-/// A content part within a message.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type")]
-pub enum ContentPart {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "image")]
-    Image { file_id: String },
-}
-
-/// A single message in the conversation.
-#[derive(Debug, Clone)]
-pub struct LlmMessage {
-    pub role: Role,
-    pub content: Vec<ContentPart>,
-}
-
-impl LlmMessage {
-    /// Create a user message with text content.
-    #[must_use]
-    pub fn user(text: impl Into<String>) -> Self {
-        LlmMessage {
-            role: Role::User,
-            content: vec![ContentPart::Text { text: text.into() }],
-        }
-    }
-
-    /// Create an assistant message with text content.
-    #[must_use]
-    pub fn assistant(text: impl Into<String>) -> Self {
-        LlmMessage {
-            role: Role::Assistant,
-            content: vec![ContentPart::Text { text: text.into() }],
-        }
-    }
-
-    /// Create a user message with text and an image.
-    #[must_use]
-    pub fn user_with_image(text: impl Into<String>, file_id: impl Into<String>) -> Self {
-        LlmMessage {
-            role: Role::User,
-            content: vec![
-                ContentPart::Text { text: text.into() },
-                ContentPart::Image {
-                    file_id: file_id.into(),
-                },
-            ],
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// Tool types
-// ════════════════════════════════════════════════════════════════════════════
-
-/// A provider-agnostic tool descriptor.
-///
-/// Each adapter maps supported tools to its wire format and silently drops
-/// unsupported ones with a `debug!` log.
-#[derive(Debug, Clone)]
-pub enum LlmTool {
-    /// Server-side file search (provider manages execution).
-    FileSearch { vector_store_ids: Vec<String> },
-    /// Server-side web search (provider manages execution).
-    WebSearch,
-    /// Generic function tool (for providers supporting function calling).
-    Function {
-        name: String,
-        description: String,
-        parameters: serde_json::Value,
-    },
-}
+// Re-export domain-level LLM types so existing `crate::infra::llm::request::*`
+// imports continue to work.
+pub use crate::domain::llm::{ContentPart, FileSearchFilter, LlmMessage, LlmTool, Role};
 
 // ════════════════════════════════════════════════════════════════════════════
 // User identity and metadata

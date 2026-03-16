@@ -4,8 +4,14 @@
 //! [`LlmRequest`](super::LlmRequest) to the provider's wire format, proxying
 //! through OAGW, and translating SSE events back to `TranslatedEvent`.
 
+pub mod azure_file_storage;
+pub mod azure_vector_store;
+pub mod dispatching_storage;
 pub mod openai_chat;
+pub mod openai_file_storage;
 pub mod openai_responses;
+pub mod openai_vector_store;
+pub mod rag_http_client;
 
 use std::sync::Arc;
 

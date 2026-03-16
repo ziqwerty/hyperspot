@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use modkit_db::odata::{LimitCfg, paginate_odata};
-use modkit_db::secure::{DBRunner, SecureEntityExt, exec_custom_all, secure_insert};
+use modkit_db::secure::{DBRunner, SecureEntityExt, secure_insert};
 use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
 use sea_orm::{
@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::models::{AttachmentSummary, ImgThumbnail};
-use crate::domain::repos::{InsertAssistantMessageParams, InsertUserMessageParams};
+use crate::domain::repos::{
+    InsertAssistantMessageParams, InsertUserMessageParams, SnapshotBoundary,
+};
 use crate::infra::db::entity::attachment::Column as AttCol;
 use crate::infra::db::entity::message::{
     ActiveModel, Column, Entity as MessageEntity, MessageRole, Model as MessageModel,
@@ -110,6 +112,27 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
         Ok(secure_insert::<MessageEntity>(am, scope, runner).await?)
     }
 
+    async fn find_user_message_by_request_id<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<MessageModel>, DomainError> {
+        Ok(MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::RequestId.eq(request_id))
+                    .add(Column::Role.eq(MessageRole::User))
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .one(runner)
+            .await?)
+    }
+
     async fn find_by_chat_and_request_id<C: DBRunner>(
         &self,
         runner: &C,
@@ -193,34 +216,32 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
             return Ok(HashMap::new());
         }
 
-        let tenant_ids =
-            scope.all_uuid_values_for(modkit_security::pep_properties::OWNER_TENANT_ID);
-
         // Single join query: message_attachments ⟕ attachments
         // Selecting only the columns needed for AttachmentSummary.
-        let select = MaEntity::find()
-            .select_only()
-            .column(MaCol::MessageId)
-            .column_as(AttCol::Id, "attachment_id")
-            .column(AttCol::AttachmentKind)
-            .column(AttCol::Filename)
-            .column(AttCol::Status)
-            .column(AttCol::ImgThumbnail)
-            .column(AttCol::ImgThumbnailWidth)
-            .column(AttCol::ImgThumbnailHeight)
+        let rows: Vec<AttachmentRow> = MaEntity::find()
             .join(JoinType::InnerJoin, MaRelation::Attachment.def())
             .filter(
                 Condition::all()
-                    .add(MaCol::TenantId.is_in(tenant_ids))
                     .add(MaCol::ChatId.eq(chat_id))
                     .add(MaCol::MessageId.is_in(message_ids.iter().copied()))
                     .add(AttCol::DeletedAt.is_null()),
             )
-            .order_by(MaCol::CreatedAt, Order::Asc)
-            .order_by(AttCol::Id, Order::Asc)
-            .into_model::<AttachmentRow>();
-
-        let rows: Vec<AttachmentRow> = exec_custom_all(select, runner)
+            .secure()
+            .scope_with(scope)
+            .project_all(runner, |q| {
+                q.select_only()
+                    .column(MaCol::MessageId)
+                    .column_as(AttCol::Id, "attachment_id")
+                    .column(AttCol::AttachmentKind)
+                    .column(AttCol::Filename)
+                    .column(AttCol::Status)
+                    .column(AttCol::ImgThumbnail)
+                    .column(AttCol::ImgThumbnailWidth)
+                    .column(AttCol::ImgThumbnailHeight)
+                    .order_by(MaCol::CreatedAt, Order::Asc)
+                    .order_by(AttCol::Id, Order::Asc)
+                    .into_model::<AttachmentRow>()
+            })
             .await
             .map_err(|e| DomainError::database(e.to_string()))?;
 
@@ -252,6 +273,113 @@ impl crate::domain::repos::MessageRepository for MessageRepository {
         }
         Ok(map)
     }
+    async fn snapshot_boundary<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<SnapshotBoundary>, DomainError> {
+        let row = MessageEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::RequestId.is_not_null())
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
+            .one(runner)
+            .await?;
+        Ok(row.map(|m| SnapshotBoundary {
+            created_at: m.created_at,
+            id: m.id,
+        }))
+    }
+
+    async fn recent_for_context<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        limit: u32,
+        boundary: Option<SnapshotBoundary>,
+    ) -> Result<Vec<MessageModel>, DomainError> {
+        let mut cond = Condition::all()
+            .add(Column::ChatId.eq(chat_id))
+            .add(Column::RequestId.is_not_null())
+            .add(Column::DeletedAt.is_null());
+
+        if let Some(b) = boundary {
+            cond = cond.add(upper_bound_filter(b));
+        }
+
+        let mut rows = MessageEntity::find()
+            .filter(cond)
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
+            .limit(u64::from(limit))
+            .all(runner)
+            .await?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    async fn recent_after_boundary<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+        lower_created_at: OffsetDateTime,
+        lower_id: Uuid,
+        limit: u32,
+        boundary: Option<SnapshotBoundary>,
+    ) -> Result<Vec<MessageModel>, DomainError> {
+        // Composite cursor: (created_at, id) > (lower_created_at, lower_id)
+        let lower_filter = Condition::any()
+            .add(Column::CreatedAt.gt(lower_created_at))
+            .add(
+                Condition::all()
+                    .add(Column::CreatedAt.eq(lower_created_at))
+                    .add(Column::Id.gt(lower_id)),
+            );
+
+        let mut cond = Condition::all()
+            .add(Column::ChatId.eq(chat_id))
+            .add(Column::RequestId.is_not_null())
+            .add(Column::DeletedAt.is_null())
+            .add(lower_filter);
+
+        if let Some(b) = boundary {
+            cond = cond.add(upper_bound_filter(b));
+        }
+
+        let mut rows = MessageEntity::find()
+            .filter(cond)
+            .secure()
+            .scope_with(scope)
+            .order_by(Column::CreatedAt, Order::Desc)
+            .order_by(Column::Id, Order::Desc)
+            .limit(u64::from(limit))
+            .all(runner)
+            .await?;
+        rows.reverse();
+        Ok(rows)
+    }
+}
+
+/// Composite upper-bound filter: `(created_at, id) <= (b.created_at, b.id)`.
+fn upper_bound_filter(b: SnapshotBoundary) -> Condition {
+    Condition::any()
+        .add(Column::CreatedAt.lt(b.created_at))
+        .add(
+            Condition::all()
+                .add(Column::CreatedAt.eq(b.created_at))
+                .add(Column::Id.lte(b.id)),
+        )
 }
 
 #[cfg(test)]

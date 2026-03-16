@@ -26,11 +26,13 @@ pub(super) fn register_turn_routes(
         .standard_errors(openapi)
         .register(router, openapi);
 
-    // TODO: DESIGN.md specifies Google-style custom method `{request_id}:retry`, but Axum's
-    // matchit router doesn't support mixed param+literal segments. Consider adding a
-    // rewrite middleware in api-gateway to map `:verb` → `/verb` so clients can use the
-    // colon syntax externally while Axum routes via `/retry` internally.
     // POST {prefix}/v1/chats/{id}/turns/{request_id}/retry
+    //
+    // TODO: DESIGN.md specifies Google-style `{request_id}:retry` (AIP-136), but
+    // axum 0.8 pins matchit =0.8.4 which cannot split `{param}:suffix` in one
+    // segment. Using `/retry` as a sub-resource until axum bumps matchit ≥0.8.6
+    // which adds suffix support.
+    // Tracking: https://github.com/tokio-rs/axum/issues/3140
     router = OperationBuilder::post(format!(
         "{prefix}/v1/chats/{{id}}/turns/{{request_id}}/retry"
     ))

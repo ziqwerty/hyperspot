@@ -255,7 +255,7 @@ fn authn_error_to_response(err: &AuthNResolverError) -> axum::response::Response
             "Service Unavailable",
             "Authentication service unavailable",
         ),
-        AuthNResolverError::Internal(_) => (
+        AuthNResolverError::TokenAcquisitionFailed(_) | AuthNResolverError::Internal(_) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Server Error",
             "Internal authentication error",
@@ -274,6 +274,9 @@ fn log_authn_error(err: &AuthNResolverError) {
         AuthNResolverError::NoPluginAvailable => tracing::error!("No AuthN plugin available"),
         AuthNResolverError::ServiceUnavailable(msg) => {
             tracing::error!("AuthN service unavailable: {msg}");
+        }
+        AuthNResolverError::TokenAcquisitionFailed(msg) => {
+            tracing::error!("AuthN token acquisition failed: {msg}");
         }
         AuthNResolverError::Internal(msg) => tracing::error!("AuthN internal error: {msg}"),
     }

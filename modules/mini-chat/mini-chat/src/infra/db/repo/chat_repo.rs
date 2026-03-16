@@ -4,12 +4,11 @@ use crate::domain::models::Chat;
 use async_trait::async_trait;
 use modkit_db::odata::{LimitCfg, paginate_odata};
 use modkit_db::secure::{
-    DBRunner, SecureEntityExt, SecureUpdateExt, exec_custom_all, secure_insert,
-    secure_update_with_scope,
+    DBRunner, SecureEntityExt, SecureUpdateExt, secure_insert, secure_update_with_scope,
 };
 use modkit_odata::{ODataQuery, Page, SortDir};
 use modkit_security::AccessScope;
-use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::{Expr, LockType};
 use sea_orm::{EntityTrait, FromQueryResult, QueryFilter, QuerySelect, Set};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -155,6 +154,27 @@ impl crate::domain::repos::ChatRepository for ChatRepository {
         Ok(result.rows_affected > 0)
     }
 
+    async fn get_for_update<C: DBRunner>(
+        &self,
+        conn: &C,
+        scope: &AccessScope,
+        id: Uuid,
+    ) -> Result<Option<Chat>, DomainError> {
+        let found = Entity::find()
+            .filter(
+                sea_orm::Condition::all()
+                    .add(Expr::col(Column::Id).eq(id))
+                    .add(Expr::col(Column::DeletedAt).is_null()),
+            )
+            .lock(LockType::Update)
+            .secure()
+            .scope_with(scope)
+            .one(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(found.map(Into::into))
+    }
+
     async fn count_messages<C: DBRunner>(
         &self,
         conn: &C,
@@ -187,8 +207,7 @@ impl crate::domain::repos::ChatRepository for ChatRepository {
             return Ok(HashMap::new());
         }
 
-        // Build scoped SELECT, then use into_inner() to add GROUP BY
-        let scoped = MsgEntity::find()
+        let rows = MsgEntity::find()
             .filter(
                 sea_orm::Condition::all()
                     .add(Expr::col(MsgColumn::ChatId).is_in(chat_ids.iter().copied()))
@@ -196,17 +215,15 @@ impl crate::domain::repos::ChatRepository for ChatRepository {
             )
             .secure()
             .scope_with(scope)
-            .into_inner();
-
-        // Transform into a GROUP BY query: SELECT chat_id, COUNT(*) FROM ... GROUP BY chat_id
-        let selector = scoped
-            .select_only()
-            .column(MsgColumn::ChatId)
-            .column_as(Expr::col(MsgColumn::Id).count(), "cnt")
-            .group_by(MsgColumn::ChatId)
-            .into_model::<ChatMessageCount>();
-
-        let rows = exec_custom_all(selector, conn).await.map_err(db_err)?;
+            .project_all(conn, |q| {
+                q.select_only()
+                    .column(MsgColumn::ChatId)
+                    .column_as(Expr::col(MsgColumn::Id).count(), "cnt")
+                    .group_by(MsgColumn::ChatId)
+                    .into_model::<ChatMessageCount>()
+            })
+            .await
+            .map_err(db_err)?;
 
         let mut counts = HashMap::with_capacity(rows.len());
         for row in rows {

@@ -2,11 +2,11 @@ use modkit_macros::domain_model;
 use modkit_security::AccessScope;
 use uuid::Uuid;
 
+use crate::domain::llm::Usage;
 use crate::domain::model::billing_outcome::BillingDerivation;
 use crate::domain::model::quota::{SettlementMethod, SettlementOutcome, SettlementPath};
 use crate::infra::db::entity::chat_turn::TurnState;
 use crate::infra::db::entity::quota_usage::PeriodType;
-use crate::infra::llm::Usage;
 
 /// All fields needed by `finalize_turn_cas()`.
 ///
@@ -45,6 +45,10 @@ pub struct FinalizationInput {
     pub downgrade_from: Option<String>,
     pub downgrade_reason: Option<String>,
     pub period_starts: Vec<(PeriodType, time::Date)>,
+
+    // ── Web search telemetry ──
+    /// Number of completed web search calls during this turn.
+    pub web_search_calls: u32,
 }
 
 /// Result of `finalize_turn_cas()`.

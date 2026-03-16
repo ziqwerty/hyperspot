@@ -19,7 +19,7 @@ changelog_path = "CHANGELOG.md"
 semver_check = true
 
 # To prevent crates.io throttling
-publish_timeout = "7m"
+publish_timeout = "10m"
 
 [changelog]
 body = """
@@ -261,5 +261,10 @@ git_release_enable = false
 
 [[package]]
 name = "cf-mini-chat"
+changelog_update = false
+git_release_enable = false
+
+[[package]]
+name = "cf-static-mini-chat-audit-plugin"
 changelog_update = false
 git_release_enable = false

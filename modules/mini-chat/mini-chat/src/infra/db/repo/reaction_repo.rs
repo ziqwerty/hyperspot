@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use modkit_db::secure::{
     DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureOnConflict,
@@ -5,8 +7,10 @@ use modkit_db::secure::{
 use modkit_security::AccessScope;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, Set};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use crate::domain::error::DomainError;
+use crate::domain::models::ReactionKind;
 use crate::domain::repos::UpsertReactionParams;
 use crate::infra::db::entity::message_reaction::{
     ActiveModel, Column, Entity as ReactionEntity, Model as ReactionModel,
@@ -59,6 +63,37 @@ impl crate::domain::repos::ReactionRepository for ReactionRepository {
             .one(runner)
             .await?
             .ok_or_else(|| DomainError::database("reaction row missing after upsert".to_owned()))
+    }
+
+    async fn batch_by_user<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        message_ids: &[Uuid],
+        user_id: Uuid,
+    ) -> Result<HashMap<Uuid, ReactionKind>, DomainError> {
+        if message_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let rows = ReactionEntity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::MessageId.is_in(message_ids.iter().copied()))
+                    .add(Column::UserId.eq(user_id)),
+            )
+            .secure()
+            .scope_with(scope)
+            .all(runner)
+            .await?;
+
+        let mut map = HashMap::with_capacity(rows.len());
+        for row in rows {
+            if let Some(kind) = ReactionKind::parse(&row.reaction) {
+                map.insert(row.message_id, kind);
+            }
+        }
+        Ok(map)
     }
 
     async fn delete_by_message_and_user<C: DBRunner>(

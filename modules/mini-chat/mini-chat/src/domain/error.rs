@@ -36,8 +36,37 @@ pub enum DomainError {
     #[error("Invalid reaction target: message {id} is not an assistant message")]
     InvalidReactionTarget { id: Uuid },
 
+    #[error("Model not found: {model_id}")]
+    ModelNotFound { model_id: String },
+
     #[error("Internal error: {message}")]
     InternalError { message: String },
+
+    #[error("Web search is currently disabled")]
+    WebSearchDisabled,
+
+    #[error("Web search calls exceeded for this message")]
+    WebSearchCallsExceeded,
+
+    #[error("Unsupported file type: {mime}")]
+    UnsupportedFileType { mime: String },
+
+    #[error("File too large: {message}")]
+    FileTooLarge { message: String },
+
+    #[error("Document limit exceeded: {message}")]
+    DocumentLimitExceeded { message: String },
+
+    #[error("Storage limit exceeded: {message}")]
+    StorageLimitExceeded { message: String },
+
+    /// Provider returned an error. `sanitized_message` is pre-sanitized by
+    /// `sanitize_provider_message()` at construction — safe for client exposure.
+    #[error("Provider error: {sanitized_message}")]
+    ProviderError {
+        code: String,
+        sanitized_message: String,
+    },
 }
 
 impl DomainError {
@@ -96,6 +125,13 @@ impl DomainError {
     }
 
     #[must_use]
+    pub fn model_not_found(model_id: impl Into<String>) -> Self {
+        Self::ModelNotFound {
+            model_id: model_id.into(),
+        }
+    }
+
+    #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn database_infra(e: InfraError) -> Self {
         Self::database(e.to_string())
@@ -142,12 +178,19 @@ impl From<ScopeError> for DomainError {
 }
 
 impl From<authz_resolver_sdk::EnforcerError> for DomainError {
+    #[allow(clippy::cognitive_complexity)]
     fn from(e: authz_resolver_sdk::EnforcerError) -> Self {
-        tracing::error!(error = %e, "AuthZ scope resolution failed");
         match e {
-            authz_resolver_sdk::EnforcerError::Denied { .. }
-            | authz_resolver_sdk::EnforcerError::CompileFailed(_) => Self::Forbidden,
+            authz_resolver_sdk::EnforcerError::Denied { ref deny_reason } => {
+                tracing::warn!(deny_reason = ?deny_reason, "AuthZ denied access");
+                Self::Forbidden
+            }
+            authz_resolver_sdk::EnforcerError::CompileFailed(ref err) => {
+                tracing::warn!(error = %err, "AuthZ constraint compile failed - access denied");
+                Self::Forbidden
+            }
             authz_resolver_sdk::EnforcerError::EvaluationFailed(ref err) => {
+                tracing::error!(error = %err, "AuthZ evaluation failed (internal error)");
                 Self::internal(err.to_string())
             }
         }

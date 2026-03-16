@@ -15,6 +15,7 @@
   - [Capabilities -> Predicate Matrix](#capabilities---predicate-matrix)
   - [Table Schemas (Local Projections)](#table-schemas-local-projections)
   - [Usage Scenarios](#usage-scenarios)
+- [S2S Authentication (Service-to-Service)](#s2s-authentication-service-to-service)
 - [Open Questions](#open-questions)
 - [References](#references)
 
@@ -388,17 +389,12 @@ Authentication is handled by the **AuthN Resolver** — a module with plugins an
 #[async_trait]
 pub trait AuthNResolverClient: Send + Sync {
     /// Authenticate a bearer token and return the authentication result.
-    ///
-    /// # Errors
-    ///
-    /// - `Unauthorized` if the token is malformed/invalid/expired or authentication fails
-    /// - `ServiceUnavailable` if the IdP is unreachable
-    /// - `NoPluginAvailable` if no plugin is configured
-    ///
-    /// # Arguments
-    ///
-    /// * `bearer_token` - The bearer token from the Authorization header
     async fn authenticate(&self, bearer_token: &str) -> Result<AuthenticationResult, AuthNResolverError>;
+
+    /// Exchange OAuth2 client credentials for a SecurityContext (S2S authentication).
+    /// See [S2S Authentication](#s2s-authentication-service-to-service) for details.
+    async fn exchange_client_credentials(&self, request: &ClientCredentialsRequest)
+        -> Result<AuthenticationResult, AuthNResolverError>;
 }
 ```
 
@@ -408,14 +404,12 @@ pub trait AuthNResolverClient: Send + Sync {
 #[async_trait]
 pub trait AuthNResolverPluginClient: Send + Sync {
     /// Authenticate a bearer token using vendor-specific validation logic.
-    ///
-    /// Plugins implement this method with their validation strategy
-    /// (JWT local validation, token introspection, custom protocols, etc.).
-    ///
-    /// # Arguments
-    ///
-    /// * `bearer_token` - The bearer token to validate
     async fn authenticate(&self, bearer_token: &str) -> Result<AuthenticationResult, AuthNResolverError>;
+
+    /// Exchange client credentials for a SecurityContext (S2S authentication).
+    /// See [S2S Authentication](#s2s-authentication-service-to-service) for details.
+    async fn exchange_client_credentials(&self, request: &ClientCredentialsRequest)
+        -> Result<AuthenticationResult, AuthNResolverError>;
 }
 ```
 
@@ -504,6 +498,7 @@ The AuthN Resolver plugin bridges Cyber Fabric to the vendor's IdP. Plugin respo
 3. **Claim Enrichment** — If IdP doesn't include required claims (`subject_type`, `subject_tenant_id`), fetch from vendor services
 4. **Token Scope Detection** — Determine first-party vs third-party apps and set `token_scopes` accordingly (see [Token Scopes](#token-scopes))
 5. **Response Mapping** — Convert vendor-specific responses to `AuthenticationResult` (containing `SecurityContext`)
+6. **S2S Credential Exchange** — Implement `exchange_client_credentials()` for service-to-service authentication (see [S2S Authentication](#s2s-authentication-service-to-service))
 
 ### Rationale: Minimalist Interface
 
@@ -1367,6 +1362,54 @@ For concrete examples demonstrating the authorization model in practice, see [AU
 
 ---
 
+## S2S Authentication (Service-to-Service)
+
+### Overview
+
+Platform modules communicate with each other outside the context of an HTTP request — inter-module calls, background processing, scheduled tasks. These interactions require a `SecurityContext` to pass through AuthZ. AuthN Resolver provides S2S authentication via the [OAuth 2.0 Client Credentials Grant (RFC 6749 §4.4)](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4) pattern.
+
+A module presents its OAuth2 credentials (`client_id`, `client_secret`, optional `scopes`) to AuthN Resolver. The AuthN plugin exchanges them with the vendor's IdP and returns a validated `SecurityContext` — the same `AuthenticationResult` that `authenticate()` returns for bearer tokens.
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant Module as Calling Module
+    participant AuthN as AuthN Resolver
+    participant Plugin as AuthN Plugin
+    participant IdP as Vendor's IdP
+
+    Module->>AuthN: exchange_client_credentials(client_id, client_secret, scopes)
+    AuthN->>Plugin: exchange_client_credentials(request)
+    Plugin->>IdP: POST /token (client_credentials grant)
+    IdP-->>Plugin: access_token + claims
+    Plugin->>Plugin: Map IdP response → SecurityContext
+    Plugin-->>AuthN: AuthenticationResult
+    AuthN-->>Module: SecurityContext
+    Module->>Module: Use SecurityContext for inter-module calls
+```
+
+The calling module knows only its credentials. The plugin owns the token endpoint URL, OAuth2 flow, and identity mapping — analogous to how `authenticate()` accepts only the bearer token while JWKS URL is configured in the plugin or obtained from the IdP's `.well-known` endpoint for the issuer (it's up to the plugin to determine the correct endpoint).
+
+The returned `SecurityContext` contains the same fields as for bearer token authentication.
+
+### Relationship to AuthZ
+
+S2S `SecurityContext` flows through the standard AuthZ pipeline unchanged. The target module's PEP evaluates authorization with the S2S subject, PDP applies policies (potentially using `subject_type` for service-specific rules), and constraints are compiled to `AccessScope` as usual. No changes to AuthZ Resolver or PEP are required.
+
+### Key Principles
+
+- **AuthN Resolver is the single owner of `SecurityContext`.** Modules do not construct `SecurityContext` directly. All identity mapping and OAuth2 logic is encapsulated in the plugin.
+- **The platform does not issue tokens.** The plugin delegates to an external IdP and maps the response.
+- **Credentials and endpoints are separated.** Module configuration contains credentials; plugin configuration contains token endpoint / issuer URL.
+
+### Future Extensions
+
+- **Token lifetime propagation** — Plugin communicates token expiry to enable caller-side caching with proper TTL
+- **Cached SecurityContext provider** — A wrapper that caches the `SecurityContext` and automatically refreshes it on expiry, so modules don't need to manage token lifecycle themselves
+
+---
+
 ## Open Questions
 
 These questions require further design work.
@@ -1390,10 +1433,7 @@ These questions require further design work.
    - **Migration protocol** — When closure table schema changes, how do PEPs discover and adapt? Is there a capabilities negotiation mechanism?
    - **Backward compatibility** — Can old PEPs work with new schema, or is coordinated upgrade required? What's the compatibility matrix?
 
-9. **S2S token issuance** — Should AuthN Resolver support token issuance for service-to-service communication, or is it sufficient to rely on standard [OAuth 2.0 Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)? Open questions:
-   - **Scope** — Is token issuance AuthN Resolver's responsibility, or should services obtain tokens directly from the IdP?
-   - **Use cases** — What S2S scenarios require Cyber Fabric involvement vs. direct IdP integration?
-   - **Token types** — Should S2S tokens differ from user tokens (e.g., different scopes, shorter TTL)?
+9. ~~**S2S token issuance**~~ — **Resolved.** See [S2S Authentication (Service-to-Service)](#s2s-authentication-service-to-service).
 
 10. **Multi-Factor Authentication (MFA) support** — How should Cyber Fabric handle MFA across both AuthN and AuthZ layers? Industry standards and best practices to study:
     - **AuthN side:**
@@ -1410,12 +1450,20 @@ These questions require further design work.
       - How do industry multi-tenant platforms (Azure AD Conditional Access, AWS IAM, Google Cloud IAP) handle MFA in the context of delegated authorization?
       - What is the interaction between MFA and token scopes? Should third-party apps be able to request MFA-elevated scopes?
 
+11. **S2S SecurityContext caching** — Modules may call `exchange_client_credentials()` frequently (on every background task iteration, on every inter-module call). Open questions:
+    - **TTL strategy** — What default TTL for cached `SecurityContext`? Static plugin has no token expiry (effectively infinite), production plugins depend on OAuth2 token TTL. Proposal: default 5 min, configurable.
+    - **`AuthenticationResult.expires_at`** — Should `AuthenticationResult` include an `expires_at: Option<DateTime>` field so the plugin can communicate token lifetime to the caller? This enables smart caller-side caching without hardcoded TTLs.
+    - **`S2sSecurityContextProvider`** — Should there be a standard cached wrapper in the SDK (`authn-resolver-sdk`) that modules use instead of calling `exchange_client_credentials()` directly? Design: ArcSwap-based cache with TTL from `expires_at`, automatic refresh on expiry.
+    - **Plugin-level caching** — Production plugins can reuse `modkit-auth::oauth2::Token` handles with auto-refresh internally. Should this be a requirement or recommendation for plugin implementors?
+    - **Cache invalidation** — When credentials are rotated, how does the cached `SecurityContext` get invalidated? Is TTL-based expiry sufficient, or do we need explicit invalidation?
+
 ---
 
 ## References
 
 ### Authentication
 - [AUTHN_JWT_OIDC_PLUGIN.md](./AUTHN_JWT_OIDC_PLUGIN.md) — JWT + OIDC plugin reference implementation
+- [RFC 6749: OAuth 2.0 Authorization Framework](https://datatracker.ietf.org/doc/html/rfc6749) (§4.4 Client Credentials Grant — S2S authentication)
 - [RFC 7519: JSON Web Token (JWT)](https://datatracker.ietf.org/doc/html/rfc7519)
 - [RFC 7662: OAuth 2.0 Token Introspection](https://datatracker.ietf.org/doc/html/rfc7662)
 - [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)

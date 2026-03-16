@@ -12,6 +12,7 @@
 //!                                   ← TerminalOutcome (via into_outcome)
 //! ```
 
+pub mod oagw_responses;
 pub mod provider_resolver;
 pub mod providers;
 pub mod request;
@@ -25,9 +26,8 @@ use futures::StreamExt;
 use modkit_security::SecurityContext;
 use oagw_sdk::error::{ServiceGatewayError, StreamingError};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
-use utoipa::ToSchema;
 
 // Re-export commonly used request types.
 pub use request::{
@@ -166,41 +166,8 @@ impl From<ServiceGatewayError> for LlmProviderError {
 // Usage, Citation, Response types
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Token usage counters.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
-pub struct Usage {
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-}
-
-/// A citation extracted from provider annotations.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct Citation {
-    pub source: CitationSource,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attachment_id: Option<String>,
-    pub snippet: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub score: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub span: Option<TextSpan>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CitationSource {
-    File,
-    Web,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-pub struct TextSpan {
-    pub start: usize,
-    pub end: usize,
-}
+// Domain-canonical definitions — re-exported for infra consumers.
+pub use crate::domain::llm::{Citation, CitationSource, TextSpan, Usage};
 
 /// Successful LLM response (non-streaming path).
 #[derive(Debug)]
@@ -281,12 +248,7 @@ pub enum ClientSseEvent {
     Citations { items: Vec<Citation> },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolPhase {
-    Start,
-    Done,
-}
+pub use crate::domain::llm::ToolPhase;
 
 // ════════════════════════════════════════════════════════════════════════════
 // ProviderStream

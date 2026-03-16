@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::infra::llm::request::{ContentPart as MessageContentPart, LlmTool};
+use crate::infra::llm::request::{ContentPart as MessageContentPart, FileSearchFilter, LlmTool};
 use crate::infra::llm::{
     Citation, CitationSource, ClientSseEvent, LlmProviderError, LlmRequest, NonStreaming,
     ProviderStream, RawDetail, ResponseResult, Streaming, TerminalOutcome, TextSpan, ToolPhase,
@@ -385,7 +385,7 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
         }
 
         ProviderEvent::ResponseCompleted { response } => {
-            let citations = extract_citations(response);
+            let citations = extract_citations(response, accumulated_text);
             let usage = Usage {
                 input_tokens: response.usage.input_tokens,
                 output_tokens: response.usage.output_tokens,
@@ -427,37 +427,53 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
 }
 
 /// Extract citations from a `ResponseCompleted`'s output annotations.
-fn extract_citations(response: &ResponseObject) -> Vec<Citation> {
+fn extract_citations(response: &ResponseObject, accumulated_text: &str) -> Vec<Citation> {
     let mut citations = Vec::new();
 
     for output_item in &response.output {
         for content_part in &output_item.content {
             for annotation in &content_part.annotations {
                 let citation = match annotation.r#type.as_str() {
-                    "file_citation" => Citation {
-                        source: CitationSource::File,
-                        title: annotation.title.clone(),
-                        url: None,
-                        attachment_id: annotation.file_id.clone(),
-                        snippet: annotation.text.clone().unwrap_or_default(),
-                        score: None,
-                        span: match (annotation.start_index, annotation.end_index) {
+                    "file_citation" | "url_citation" => {
+                        let snippet = annotation
+                            .text
+                            .clone()
+                            .or_else(|| {
+                                annotation.start_index.zip(annotation.end_index).and_then(
+                                    |(start, end)| {
+                                        accumulated_text.get(start..end).map(ToOwned::to_owned)
+                                    },
+                                )
+                            })
+                            .unwrap_or_default();
+                        let span = match (annotation.start_index, annotation.end_index) {
                             (Some(start), Some(end)) => Some(TextSpan { start, end }),
                             _ => None,
-                        },
-                    },
-                    "url_citation" => Citation {
-                        source: CitationSource::Web,
-                        title: annotation.title.clone(),
-                        url: annotation.url.clone(),
-                        attachment_id: None,
-                        snippet: annotation.text.clone().unwrap_or_default(),
-                        score: None,
-                        span: match (annotation.start_index, annotation.end_index) {
-                            (Some(start), Some(end)) => Some(TextSpan { start, end }),
-                            _ => None,
-                        },
-                    },
+                        };
+
+                        let is_file = annotation.r#type == "file_citation";
+                        Citation {
+                            source: if is_file {
+                                CitationSource::File
+                            } else {
+                                CitationSource::Web
+                            },
+                            title: annotation.title.clone(),
+                            url: if is_file {
+                                None
+                            } else {
+                                annotation.url.clone()
+                            },
+                            attachment_id: if is_file {
+                                annotation.file_id.clone()
+                            } else {
+                                None
+                            },
+                            snippet,
+                            score: None,
+                            span,
+                        }
+                    }
                     _ => continue,
                 };
                 citations.push(citation);
@@ -495,10 +511,15 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
                 // System messages are handled via the `instructions` field above.
                 crate::infra::llm::request::Role::System => unreachable!(),
             };
+            let is_assistant = role == "assistant";
             let content: Vec<serde_json::Value> = msg
                 .content
                 .iter()
                 .map(|part| match part {
+                    MessageContentPart::Text { text } if is_assistant => serde_json::json!({
+                        "type": "output_text",
+                        "text": text
+                    }),
                     MessageContentPart::Text { text } => serde_json::json!({
                         "type": "input_text",
                         "text": text
@@ -542,10 +563,22 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
         .tools
         .iter()
         .filter_map(|tool| match tool {
-            LlmTool::FileSearch { vector_store_ids } => Some(serde_json::json!({
-                "type": "file_search",
-                "vector_store_ids": vector_store_ids
-            })),
+            LlmTool::FileSearch {
+                vector_store_ids,
+                filters,
+            } => {
+                // Responses API uses flat format (vector_store_ids at top level),
+                // NOT nested inside a "file_search" key.
+                let mut tool = serde_json::json!({
+                    "type": "file_search",
+                    "vector_store_ids": vector_store_ids
+                });
+                if let Some(f) = filters {
+                    tool["filters"] = serialize_file_search_filter(f);
+                }
+                Some(tool)
+            }
+            // TODO(P2): Update "web_search_preview" to "web_search" when adding provider parameter pass-through
             LlmTool::WebSearch => Some(serde_json::json!({
                 "type": "web_search_preview"
             })),
@@ -569,6 +602,30 @@ fn build_request_body<M>(request: &LlmRequest<M>, stream: bool) -> serde_json::V
     }
 
     body
+}
+
+/// Serialize a `FileSearchFilter` to the provider's wire JSON format.
+fn serialize_file_search_filter(filter: &FileSearchFilter) -> serde_json::Value {
+    match filter {
+        FileSearchFilter::Eq { key, value } => serde_json::json!({
+            "type": "eq",
+            "key": key,
+            "value": value,
+        }),
+        FileSearchFilter::In { key, values } => serde_json::json!({
+            "type": "in",
+            "key": key,
+            "values": values,
+        }),
+        FileSearchFilter::And(filters) => serde_json::json!({
+            "type": "and",
+            "filters": filters.iter().map(serialize_file_search_filter).collect::<Vec<_>>(),
+        }),
+        FileSearchFilter::Or(filters) => serde_json::json!({
+            "type": "or",
+            "filters": filters.iter().map(serialize_file_search_filter).collect::<Vec<_>>(),
+        }),
+    }
 }
 
 /// Serialize a request body to `Body::Bytes`.
@@ -713,8 +770,6 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
         let response_obj: ResponseObject =
             serde_json::from_slice(&bytes).map_err(|_| parse_error_response(&bytes))?;
 
-        let citations = extract_citations(&response_obj);
-
         // Extract text content from output
         let content = response_obj
             .output
@@ -724,6 +779,11 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
             .map(|part| part.text.as_str())
             .collect::<Vec<_>>()
             .join("");
+
+        // Note: citations here contain raw provider file_ids, not mapped attachment UUIDs.
+        // The non-streaming complete() path is not used for user-facing requests; if it
+        // ever is, map_citation_ids() must be applied by the caller.
+        let citations = extract_citations(&response_obj, &content);
 
         let usage = Usage {
             input_tokens: response_obj.usage.input_tokens,
@@ -890,23 +950,15 @@ mod tests {
         ) -> Result<(), ServiceGatewayError> {
             unimplemented!()
         }
-        async fn resolve_upstream(
+        async fn resolve_proxy_target(
             &self,
             _: SecurityContext,
             _: &str,
-        ) -> Result<Upstream, ServiceGatewayError> {
-            unimplemented!()
-        }
-        async fn resolve_route(
-            &self,
-            _: SecurityContext,
-            _: uuid::Uuid,
             _: &str,
             _: &str,
-        ) -> Result<Route, ServiceGatewayError> {
+        ) -> Result<(Upstream, Route), ServiceGatewayError> {
             unimplemented!()
         }
-
         async fn proxy_request(
             &self,
             _ctx: SecurityContext,
@@ -1004,13 +1056,39 @@ mod tests {
         let request = llm_request("gpt-4o")
             .tool(LlmTool::FileSearch {
                 vector_store_ids: vec!["vs-123".into()],
+                filters: None,
             })
             .build_streaming();
 
         let body = build_request_body(&request, true);
 
         assert_eq!(body["tools"][0]["type"], "file_search");
+        // Responses API: flat format — vector_store_ids at top level, not nested
         assert_eq!(body["tools"][0]["vector_store_ids"][0], "vs-123");
+        assert!(body["tools"][0]["filters"].is_null());
+    }
+
+    #[test]
+    fn builder_file_search_tool_with_filter() {
+        let request = llm_request("gpt-4o")
+            .tool(LlmTool::FileSearch {
+                vector_store_ids: vec!["vs-123".into()],
+                filters: Some(FileSearchFilter::Eq {
+                    key: "attachment_id".into(),
+                    value: "abc-123".into(),
+                }),
+            })
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+
+        assert_eq!(body["tools"][0]["type"], "file_search");
+        // Responses API: flat format
+        let tool = &body["tools"][0];
+        assert_eq!(tool["vector_store_ids"][0], "vs-123");
+        assert_eq!(tool["filters"]["type"], "eq");
+        assert_eq!(tool["filters"]["key"], "attachment_id");
+        assert_eq!(tool["filters"]["value"], "abc-123");
     }
 
     #[test]
@@ -1030,6 +1108,7 @@ mod tests {
             .tools(vec![
                 LlmTool::FileSearch {
                     vector_store_ids: vec!["vs-123".into()],
+                    filters: None,
                 },
                 LlmTool::WebSearch,
             ])
@@ -1482,7 +1561,7 @@ mod tests {
                 output_tokens: 0,
             },
         };
-        let citations = extract_citations(&response);
+        let citations = extract_citations(&response, "");
         assert_eq!(citations.len(), 1);
         assert!(matches!(citations[0].source, CitationSource::File));
         assert_eq!(citations[0].title, "Report.pdf");
@@ -1516,7 +1595,7 @@ mod tests {
                 output_tokens: 0,
             },
         };
-        let citations = extract_citations(&response);
+        let citations = extract_citations(&response, "");
         assert_eq!(citations.len(), 1);
         assert!(matches!(citations[0].source, CitationSource::Web));
         assert_eq!(citations[0].url.as_deref(), Some("https://example.com"));
@@ -1540,8 +1619,99 @@ mod tests {
                 output_tokens: 0,
             },
         };
-        let citations = extract_citations(&response);
+        let citations = extract_citations(&response, "");
         assert!(citations.is_empty());
+    }
+
+    #[test]
+    fn extract_citations_url_citation_snippet_from_text_range() {
+        let accumulated = "0123456789The capital of France is Paris.";
+        let response = ResponseObject {
+            id: "resp-1".into(),
+            output: vec![OutputItem {
+                r#type: "message".into(),
+                content: vec![ResponseContentPart {
+                    r#type: "output_text".into(),
+                    text: accumulated.into(),
+                    annotations: vec![Annotation {
+                        r#type: "url_citation".into(),
+                        title: "Wikipedia".into(),
+                        url: Some("https://en.wikipedia.org/wiki/France".into()),
+                        file_id: None,
+                        start_index: Some(10),
+                        end_index: Some(31),
+                        text: None,
+                    }],
+                }],
+            }],
+            usage: RawUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let citations = extract_citations(&response, accumulated);
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].snippet, "The capital of France");
+    }
+
+    #[test]
+    fn extract_citations_url_citation_snippet_from_annotation_text() {
+        let response = ResponseObject {
+            id: "resp-1".into(),
+            output: vec![OutputItem {
+                r#type: "message".into(),
+                content: vec![ResponseContentPart {
+                    r#type: "output_text".into(),
+                    text: "Hello world".into(),
+                    annotations: vec![Annotation {
+                        r#type: "url_citation".into(),
+                        title: "Example".into(),
+                        url: Some("https://example.com".into()),
+                        file_id: None,
+                        start_index: Some(0),
+                        end_index: Some(5),
+                        text: Some("explicit snippet".into()),
+                    }],
+                }],
+            }],
+            usage: RawUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let citations = extract_citations(&response, "Hello world");
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].snippet, "explicit snippet");
+    }
+
+    #[test]
+    fn extract_citations_url_citation_no_text_no_indices() {
+        let response = ResponseObject {
+            id: "resp-1".into(),
+            output: vec![OutputItem {
+                r#type: "message".into(),
+                content: vec![ResponseContentPart {
+                    r#type: "output_text".into(),
+                    text: "Hello".into(),
+                    annotations: vec![Annotation {
+                        r#type: "url_citation".into(),
+                        title: "Example".into(),
+                        url: Some("https://example.com".into()),
+                        file_id: None,
+                        start_index: None,
+                        end_index: None,
+                        text: None,
+                    }],
+                }],
+            }],
+            usage: RawUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let citations = extract_citations(&response, "Hello");
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].snippet, "");
     }
 
     // ── Integration tests: streaming ───────────────────────────────────────
@@ -1819,6 +1989,7 @@ mod tests {
             .tools(vec![
                 LlmTool::FileSearch {
                     vector_store_ids: vec!["vs-123".into()],
+                    filters: None,
                 },
                 LlmTool::WebSearch,
             ])
@@ -1857,5 +2028,55 @@ mod tests {
         assert_eq!(body["tools"][1]["type"], "web_search_preview");
         assert_eq!(body["metadata"]["tenant_id"], "t1");
         assert_eq!(body["metadata"]["feature"], "file_search+web_search");
+    }
+
+    // ── P5-K4: file_search wire format (Responses API = flat) ──
+
+    #[test]
+    fn file_search_wire_format_flat() {
+        let request = llm_request("gpt-4o")
+            .message(LlmMessage::user("test"))
+            .tools(vec![LlmTool::FileSearch {
+                vector_store_ids: vec!["vs-001".into(), "vs-002".into()],
+                filters: None,
+            }])
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+
+        // Responses API: flat format — vector_store_ids at top level of tool object
+        let tool = &body["tools"][0];
+        assert_eq!(tool["type"], "file_search");
+        assert_eq!(tool["vector_store_ids"][0], "vs-001");
+        assert_eq!(tool["vector_store_ids"][1], "vs-002");
+    }
+
+    // ── P5-K5: file_search wire format with filters ──
+
+    #[test]
+    fn file_search_wire_format_with_filters() {
+        let filter = FileSearchFilter::In {
+            key: "attachment_id".to_owned(),
+            values: vec!["uuid-a".to_owned(), "uuid-b".to_owned()],
+        };
+
+        let request = llm_request("gpt-4o")
+            .message(LlmMessage::user("test"))
+            .tools(vec![LlmTool::FileSearch {
+                vector_store_ids: vec!["vs-001".into()],
+                filters: Some(filter),
+            }])
+            .build_streaming();
+
+        let body = build_request_body(&request, true);
+        let tool = &body["tools"][0];
+
+        assert_eq!(tool["type"], "file_search");
+        // Responses API: flat format — everything at top level
+        assert_eq!(tool["vector_store_ids"][0], "vs-001");
+        assert_eq!(tool["filters"]["type"], "in");
+        assert_eq!(tool["filters"]["key"], "attachment_id");
+        assert_eq!(tool["filters"]["values"][0], "uuid-a");
+        assert_eq!(tool["filters"]["values"][1], "uuid-b");
     }
 }

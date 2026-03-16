@@ -4,7 +4,7 @@ use uuid::Uuid;
 use credstore_sdk::SharingMode;
 
 /// Plugin configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, modkit_macros::ExpandVars)]
 #[serde(default, deny_unknown_fields)]
 pub struct StaticCredStorePluginConfig {
     /// Vendor name for GTS instance registration.
@@ -14,6 +14,7 @@ pub struct StaticCredStorePluginConfig {
     pub priority: i16,
 
     /// Static secrets served by this plugin.
+    #[expand_vars]
     pub secrets: Vec<SecretConfig>,
 }
 
@@ -28,7 +29,7 @@ impl Default for StaticCredStorePluginConfig {
 }
 
 /// A single secret entry in the plugin configuration.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, modkit_macros::ExpandVars)]
 #[serde(deny_unknown_fields)]
 pub struct SecretConfig {
     /// Tenant that owns this secret.
@@ -62,6 +63,7 @@ pub struct SecretConfig {
     pub key: String,
 
     /// Secret value (plaintext string, converted to bytes at init).
+    #[expand_vars]
     pub value: String,
 
     /// Sharing mode for this secret.

@@ -19,6 +19,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tower_http::{
+    catch_panic::CatchPanicLayer,
     limit::RequestBodyLimitLayer,
     request_id::{PropagateRequestIdLayer, SetRequestIdLayer},
     timeout::TimeoutLayer,
@@ -225,11 +226,18 @@ impl ApiGateway {
         // becomes the **outermost** layer and therefore runs **first** on the request path.
         //
         // Desired request execution order (outermost -> innermost):
-        // SetRequestId -> PropagateRequestId -> Trace -> push_req_id_to_extensions
-        // -> Timeout -> BodyLimit -> CORS -> MIME validation -> RateLimit -> ErrorMapping -> Auth -> Router
+        // SetRequestId -> PropagateRequestId -> Trace -> push_req_id
+        // -> HttpMetrics -> CatchPanic
+        // -> Timeout -> BodyLimit -> CORS -> MIME validation -> RateLimit -> ErrorMapping -> Auth -> License
+        // -> [Route matching] -> PropagateMatchedPath -> Handler
         //
         // Therefore we must add layers in the reverse order (innermost -> outermost) below.
         // Due future refactoring, this order must be maintained.
+
+        // 14) Propagate MatchedPath to response extensions (route_layer — innermost).
+        // This copies MatchedPath from the request (populated by Axum route matching)
+        // into the response so outer layer() middleware (metrics) can read it.
+        router = router.route_layer(from_fn(middleware::http_metrics::propagate_matched_path));
 
         let config = self.get_cached_config();
 
@@ -241,7 +249,7 @@ impl ApiGateway {
             .map(|e| e.value().clone())
             .collect();
 
-        // 11) License validation
+        // 13) License validation
         let license_map = middleware::license_validation::LicenseRequirementMap::from_specs(&specs);
 
         router = router.layer(from_fn(
@@ -251,7 +259,7 @@ impl ApiGateway {
             },
         ));
 
-        // 10) Auth
+        // 12) Auth
         if config.auth_disabled {
             // Build security contexts for compatibility during migration
             let default_security_context = SecurityContext::builder()
@@ -286,10 +294,10 @@ impl ApiGateway {
             ));
         }
 
-        // 9) Error mapping (outer to auth so it can translate auth/handler errors)
+        // 11) Error mapping (outer to auth so it can translate auth/handler errors)
         router = router.layer(from_fn(modkit::api::error_layer::error_mapping_middleware));
 
-        // 8) Per-route rate limiting & in-flight limits
+        // 10) Per-route rate limiting & in-flight limits
         let rate_map = middleware::rate_limit::RateLimiterMap::from_specs(&specs, &config)?;
 
         router = router.layer(from_fn(
@@ -299,7 +307,7 @@ impl ApiGateway {
             },
         ));
 
-        // 7) MIME type validation
+        // 9) MIME type validation
         let mime_map = middleware::mime_validation::build_mime_validation_map(&specs);
         router = router.layer(from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
@@ -308,19 +316,32 @@ impl ApiGateway {
             },
         ));
 
-        // 6) CORS (must be outer to auth/limits so OPTIONS preflight short-circuits)
+        // 8) CORS (must be outer to auth/limits so OPTIONS preflight short-circuits)
         if config.cors_enabled {
             router = router.layer(crate::cors::build_cors_layer(&config));
         }
 
-        // 5) Body limit
+        // 7) Body limit
         router = router.layer(RequestBodyLimitLayer::new(config.defaults.body_limit_bytes));
         router = router.layer(DefaultBodyLimit::max(config.defaults.body_limit_bytes));
 
-        // 4) Timeout
+        // 6) Timeout
         router = router.layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::GATEWAY_TIMEOUT,
             Duration::from_secs(30),
+        ));
+
+        // 5) CatchPanic (converts panics to 500 before metrics sees them)
+        router = router.layer(CatchPanicLayer::new());
+
+        // 4) HTTP metrics (layer — captures all middleware responses including auth/rate-limit/timeout)
+        let http_metrics = Arc::new(middleware::http_metrics::HttpMetrics::new(
+            Self::MODULE_NAME,
+            &config.metrics.prefix,
+        ));
+        router = router.layer(from_fn_with_state(
+            http_metrics,
+            middleware::http_metrics::http_metrics_middleware,
         ));
 
         // 3) Record request_id into span + extensions (requires span to exist first => must be inner to Trace)
@@ -383,7 +404,7 @@ impl ApiGateway {
                 )
         });
 
-        // 1) Request ID handling
+        // 1) Request ID handling (outermost)
         let x_request_id = crate::middleware::request_id::header();
         // If missing, generate x-request-id first; then propagate it to the response.
         router = router.layer(PropagateRequestIdLayer::new(x_request_id.clone()));

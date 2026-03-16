@@ -36,7 +36,8 @@ impl From<DomainError> for Problem {
             .with_trace_id(trace_id.unwrap_or_default()),
 
             DomainError::Conflict { code, message } => {
-                Problem::new(StatusCode::CONFLICT, code.clone(), message.clone())
+                Problem::new(StatusCode::CONFLICT, "Conflict", message.clone())
+                    .with_code(code.clone())
                     .with_trace_id(trace_id.unwrap_or_default())
             }
 
@@ -61,14 +62,77 @@ impl From<DomainError> for Problem {
             )
             .with_trace_id(trace_id.unwrap_or_default()),
 
-            DomainError::Database { .. } | DomainError::InternalError { .. } => {
-                tracing::error!(error = ?e, "Internal error occurred");
+            DomainError::ModelNotFound { model_id } => Problem::new(
+                StatusCode::NOT_FOUND,
+                "model_not_found",
+                format!("Model '{model_id}' was not found"),
+            )
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::Database { message } | DomainError::InternalError { message } => {
+                tracing::error!(error_message = %message, "internal error occurred");
                 Problem::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal Error",
                     "An internal error occurred",
                 )
                 .with_trace_id(trace_id.unwrap_or_default())
+            }
+
+            DomainError::WebSearchDisabled => Problem::new(
+                StatusCode::BAD_REQUEST,
+                "web_search_disabled",
+                "Web search is currently disabled",
+            )
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::WebSearchCallsExceeded => Problem::new(
+                StatusCode::BAD_REQUEST,
+                "web_search_calls_exceeded",
+                "Web search calls exceeded for this message",
+            )
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::UnsupportedFileType { mime } => Problem::new(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_file_type",
+                format!("Unsupported file type: {mime}"),
+            )
+            .with_code("unsupported_file_type".to_owned())
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::FileTooLarge { message } => Problem::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file_too_large",
+                message.clone(),
+            )
+            .with_code("file_too_large".to_owned())
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::DocumentLimitExceeded { message } => Problem::new(
+                StatusCode::BAD_REQUEST,
+                "document_limit_exceeded",
+                message.clone(),
+            )
+            .with_code("document_limit_exceeded".to_owned())
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::StorageLimitExceeded { message } => Problem::new(
+                StatusCode::BAD_REQUEST,
+                "storage_limit_exceeded",
+                message.clone(),
+            )
+            .with_code("storage_limit_exceeded".to_owned())
+            .with_trace_id(trace_id.unwrap_or_default()),
+
+            DomainError::ProviderError {
+                code,
+                sanitized_message,
+            } => {
+                tracing::error!(code = %code, message = %sanitized_message, "provider error");
+                Problem::new(StatusCode::BAD_GATEWAY, code, sanitized_message)
+                    .with_code(code.clone())
+                    .with_trace_id(trace_id.unwrap_or_default())
             }
         }
     }

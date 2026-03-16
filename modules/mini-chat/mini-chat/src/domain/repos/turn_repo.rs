@@ -128,4 +128,13 @@ pub trait TurnRepository: Send + Sync {
         scope: &AccessScope,
         chat_id: Uuid,
     ) -> Result<Option<TurnModel>, DomainError>;
+
+    /// SELECT the most recent non-deleted turn for a chat with `FOR UPDATE` row lock.
+    /// Used within mutation transactions to serialize concurrent retry/edit/delete.
+    async fn find_latest_for_update<C: DBRunner>(
+        &self,
+        runner: &C,
+        scope: &AccessScope,
+        chat_id: Uuid,
+    ) -> Result<Option<TurnModel>, DomainError>;
 }

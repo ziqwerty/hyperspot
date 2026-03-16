@@ -151,7 +151,7 @@ pub use tx_config::{TxAccessMode, TxConfig, TxIsolationLevel};
 // Select operations
 pub use select::{
     Scoped, SecureEntityExt, SecureFindRelatedExt, SecureSelect, SecureSelectTwo,
-    SecureSelectTwoMany, Unscoped, exec_custom_all,
+    SecureSelectTwoMany, Unscoped,
 };
 
 // Update/Delete/Insert operations

@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -538,6 +538,7 @@ dependencies = [
  "cf-modkit-macros",
  "cf-modkit-odata",
  "cf-modkit-sdk",
+ "cf-modkit-utils",
  "cf-system-sdks",
  "dashmap",
  "figment",
@@ -572,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-db"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -585,7 +586,6 @@ dependencies = [
  "dashmap",
  "dirs",
  "figment",
- "regex",
  "rust_decimal",
  "ryu",
  "sea-orm",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-db-macros"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "heck 0.5.0",
  "proc-macro-error2",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-errors"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "axum 0.8.8",
  "http",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-errors-macro"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-macros"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-odata"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "base64",
  "bigdecimal",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-sdk"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "cf-modkit-odata",
  "cf-modkit-security",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-security"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "postcard",
@@ -688,16 +688,18 @@ dependencies = [
 
 [[package]]
 name = "cf-modkit-utils"
-version = "0.3.2"
+version = "0.5.4"
 dependencies = [
  "humantime",
+ "regex",
+ "secrecy",
  "serde",
  "zeroize",
 ]
 
 [[package]]
 name = "cf-system-sdk-directory"
-version = "0.1.18"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -705,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "cf-system-sdks"
-version = "0.1.18"
+version = "0.1.24"
 dependencies = [
  "cf-system-sdk-directory",
 ]

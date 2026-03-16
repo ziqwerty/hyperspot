@@ -13,6 +13,7 @@ use modkit::contracts::SystemCapability;
 use modkit::{Module, ModuleCtx, RestApiCapability};
 use modkit_security::SecurityContext;
 use oagw_sdk::api::ServiceGatewayClientV1;
+use tenant_resolver_sdk::TenantResolverClient;
 use tracing::info;
 use types_registry_sdk::{RegisterResult, RegisterSummary, TypesRegistryClient};
 
@@ -36,7 +37,7 @@ pub struct AppState {
 /// Outbound API Gateway module: wires repos, services, and routes.
 #[modkit::module(
     name = "oagw",
-    deps = ["types-registry", "authz-resolver", "credstore"],
+    deps = ["types-registry", "authz-resolver", "credstore", "tenant-resolver"],
     capabilities = [system, rest]
 )]
 pub struct OutboundApiGatewayModule {
@@ -64,14 +65,21 @@ impl Module for OutboundApiGatewayModule {
         // -- Control Plane init --
         let upstream_repo = Arc::new(InMemoryUpstreamRepo::new());
         let route_repo = Arc::new(InMemoryRouteRepo::new());
-        let cp: Arc<dyn ControlPlaneService> =
-            Arc::new(ControlPlaneServiceImpl::new(upstream_repo, route_repo));
+        let tenant_resolver = ctx.client_hub().get::<dyn TenantResolverClient>()?;
 
         let credstore = ctx.client_hub().get::<dyn CredStoreClientV1>()?;
 
         // -- AuthZ resolver for permission checks --
         let authz = ctx.client_hub().get::<dyn AuthZResolverClient>()?;
         let policy_enforcer = PolicyEnforcer::new(authz);
+
+        let cp: Arc<dyn ControlPlaneService> = Arc::new(ControlPlaneServiceImpl::new(
+            upstream_repo,
+            route_repo,
+            tenant_resolver,
+            policy_enforcer.clone(),
+            credstore.clone(),
+        ));
 
         // -- Data Plane init (Pingora proxy engine) --
         let server_conf = Arc::new(pingora_core::server::configuration::ServerConf {
@@ -186,10 +194,17 @@ impl SystemCapability for OutboundApiGatewayModule {
             .as_ref()
             .clone();
 
+        // -- Materialise upstreams, building a GTS-instance-UUID -> OAGW-UUID map --
+        // Routes registered via types-registry reference upstreams by the
+        // deterministic GTS instance UUID. OAGW assigns random UUIDs, so we
+        // need to rewrite route upstream_ids before creating them.
         let upstreams = provisioning.list_upstreams().await?;
+        let mut gts_to_oagw: std::collections::HashMap<uuid::Uuid, uuid::Uuid> =
+            std::collections::HashMap::new();
         for u in &upstreams {
             let ctx = SecurityContext::builder()
                 .subject_tenant_id(u.tenant_id)
+                .subject_id(modkit_security::constants::DEFAULT_SUBJECT_ID)
                 .build()?;
             let created = app_state
                 .cp
@@ -198,6 +213,9 @@ impl SystemCapability for OutboundApiGatewayModule {
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to provision upstream (tenant={}): {e}", u.tenant_id)
                 })?;
+            if let Some(gts_id) = u.gts_instance_id {
+                gts_to_oagw.insert(gts_id, created.id);
+            }
             info!(
                 id = %created.id,
                 tenant_id = %u.tenant_id,
@@ -210,14 +228,16 @@ impl SystemCapability for OutboundApiGatewayModule {
         for r in &routes {
             let ctx = SecurityContext::builder()
                 .subject_tenant_id(r.tenant_id)
+                .subject_id(modkit_security::constants::DEFAULT_SUBJECT_ID)
                 .build()?;
-            let created = app_state
-                .cp
-                .create_route(&ctx, r.request.clone())
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to provision route (tenant={}): {e}", r.tenant_id)
-                })?;
+            // Rewrite upstream_id if it references a GTS instance UUID.
+            let mut req = r.request.clone();
+            if let Some(&oagw_id) = gts_to_oagw.get(&req.upstream_id) {
+                req.upstream_id = oagw_id;
+            }
+            let created = app_state.cp.create_route(&ctx, req).await.map_err(|e| {
+                anyhow::anyhow!("Failed to provision route (tenant={}): {e}", r.tenant_id)
+            })?;
             info!(
                 id = %created.id,
                 tenant_id = %r.tenant_id,

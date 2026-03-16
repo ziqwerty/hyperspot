@@ -35,7 +35,7 @@ impl Default for StaticCredStorePlugin {
 impl Module for StaticCredStorePlugin {
     async fn init(&self, ctx: &ModuleCtx) -> anyhow::Result<()> {
         // Load configuration
-        let cfg: StaticCredStorePluginConfig = ctx.config()?;
+        let cfg: StaticCredStorePluginConfig = ctx.config_expanded()?;
 
         info!(
             vendor = %cfg.vendor,

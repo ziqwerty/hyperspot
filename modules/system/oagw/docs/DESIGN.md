@@ -379,16 +379,43 @@ Alias resolution walks tenant hierarchy from descendant to root; closest match w
 
 Upstreams are identified by alias in proxy requests: `{METHOD} /api/oagw/v1/proxy/{alias}/{path}`.
 
-**Alias Generation Rules**:
+**Alias Enforcement Rules**:
 
-| Scenario | Generated Alias | Example |
+Alias behavior is determined entirely by endpoint type. The system enforces strict rules — aliases are not arbitrary labels.
+
+| Endpoint Type | Alias Rule | Example |
 |---|---|---|
-| Single host, standard port | hostname (no port) | `api.openai.com:443` → `api.openai.com` |
-| Single host, non-standard port | hostname:port | `api.openai.com:8443` → `api.openai.com:8443` |
-| Multiple hosts with common suffix | common domain suffix | `us.vendor.com`, `eu.vendor.com` → `vendor.com` |
-| IP addresses or heterogeneous hosts | must be explicit | `10.0.1.1`, `10.0.1.2` → user provides `my-service` |
+| Hostname, standard port | Auto-derived (hostname) | `api.openai.com:443` → `api.openai.com` |
+| Hostname, non-standard port | Auto-derived (hostname:port) | `api.openai.com:8443` → `api.openai.com:8443` |
+| Multiple hostnames, registrable common suffix (PSL-validated) | Auto-derived via `common_domain_suffix()` — shared suffix must be a registrable domain (≥2 labels, not a bare public suffix) | `us.vendor.com`, `eu.vendor.com` → `vendor.com` |
+| Multiple hostnames, common suffix is a bare public suffix | Explicit alias **required** (derivation rejected) | `foo.co.uk`, `bar.co.uk` → **not** derivable (`co.uk` is a public suffix) |
+| Multiple hostnames, no registrable common suffix | Explicit alias **required** | `us.foo.com`, `eu.bar.com` → user must provide alias |
+| IP addresses | Explicit alias **required** | `10.0.1.1`, `10.0.1.2` → user provides `my-service` |
 
-**Standard ports** (omitted from alias): HTTP: 80, HTTPS: 443, WebSocket: 80 (ws) / 443 (wss), WebTransport: 443, gRPC: 443.
+**Hostname-based endpoints**: alias is always auto-derived. User-provided alias that differs from the auto-derived value is **rejected** (400 Validation); providing the exact derived value is tolerated silently for idempotency.
+
+**IP-based or non-derivable endpoints**: explicit alias is **required** from the user. Omitting the alias field returns 400 Validation.
+
+**Standard ports** (omitted from derived alias): HTTP: 80, HTTPS/WSS/WebTransport/gRPC: 443.
+
+**Alias Normalization**: All aliases are normalized to ASCII lowercase with trailing dots stripped. Resolution is case-insensitive (e.g., `Api.OpenAI.COM` resolves to an upstream with alias `api.openai.com`).
+
+**Hostname Validation**: Endpoint hostnames are validated per RFC 1123: max 253 characters total, each label 1–63 characters, labels contain only ASCII alphanumeric and hyphen, labels cannot start or end with hyphen. A trailing dot (FQDN notation) is tolerated and stripped.
+
+**Alias Update Behavior**:
+
+| Transition | Behavior |
+|---|---|
+| Derivable → Derivable (new endpoints) | Alias recomputed from new endpoints |
+| Derivable → Non-derivable | **Rejected** unless user provides explicit alias |
+| Non-derivable → Non-derivable | Existing alias retained; user may provide a new one |
+| Non-derivable → Derivable | Alias recomputed (old explicit alias replaced) |
+| Derivable (no endpoint change) | Alias override **rejected** (400 Validation) |
+| Non-derivable (no endpoint change) | User may update alias freely |
+
+"Derivable" means `compute_derived_alias()` returns a value (single hostname, or multiple hostnames with a registrable common suffix). "Non-derivable" means derivation fails — this includes IP-based endpoints, heterogeneous hostnames with no common suffix, and hostname pools whose only common suffix is a bare public suffix (e.g., `co.uk`). See `enforce_alias_update()` for the full branching logic.
+
+For multi-host endpoints with non-standard ports, the common suffix derivation preserves `:port` in the alias (e.g., `us.vendor.com:8443` + `eu.vendor.com:8443` → `vendor.com:8443`). This avoids collisions between pools sharing the same domain suffix on different ports — operators should reference the `suffix:port` form when routing to these upstreams.
 
 **Alias Uniqueness**: Alias is unique **per tenant**, not globally. Database constraint: `UNIQUE (tenant_id, alias)`. Tenants can independently manage upstreams without namespace collisions. Descendants can shadow ancestor aliases for controlled customization.
 

@@ -46,6 +46,9 @@ mysql = [
 
 integration = []
 
+# Transactional outbox pipeline (preview — API may change)
+preview-outbox = ["dep:tokio-util", "dep:futures-util"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -67,19 +70,49 @@ bigdecimal = { workspace = true }
 rust_decimal = { workspace = true }
 ryu = { workspace = true }
 url = { workspace = true }
-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
 figment = { workspace = true }
 sqlx = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+[[example]]
+name = "outbox_transactional"
+required-features = ["sqlite", "preview-outbox"]
+
+[[example]]
+name = "outbox_retry_reject"
+required-features = ["sqlite", "preview-outbox"]
+
+[[example]]
+name = "outbox_dead_letters"
+required-features = ["sqlite", "preview-outbox"]
+
+[[example]]
+name = "outbox_batch_multi_queue"
+required-features = ["sqlite", "preview-outbox"]
+
+[[bench]]
+name = "outbox_throughput"
+harness = false
+required-features = ["preview-outbox"]
+
+[[bench]]
+name = "worker_overhead"
+harness = false
+required-features = ["preview-outbox"]
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["html_reports"] }
 tempfile = { workspace = true }
 serde-saphyr = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 anyhow = { workspace = true }
 temp-env = { workspace = true }
 trybuild = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }

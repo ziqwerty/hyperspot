@@ -1,32 +1,34 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use modkit_macros::domain_model;
-
 use crate::domain::error::DomainError;
+use crate::domain::models::ResolvedModel;
 
-/// Result of model resolution — model ID plus routing metadata.
-#[domain_model]
-pub struct ResolvedModel {
-    pub model_id: String,
-    /// Maps to a key in `MiniChatConfig.providers` (e.g. `"openai"`, `"azure_openai"`).
-    pub provider_id: String,
-}
-
-/// Resolves and validates model IDs against the user's policy catalog.
+/// Resolves and validates model IDs against the policy catalog.
 ///
-/// If `model` is `None`, returns the default model for the given `user_id`.
-/// If `model` is `Some`, validates it is non-empty and exists in the catalog.
-///
-/// # Errors
-///
-/// Returns [`DomainError`] if the model is empty, not found in the catalog,
-/// or the policy snapshot for `user_id` cannot be retrieved.
+/// All catalog access (resolve, list, get) is encapsulated here.
+/// The implementation fetches the policy snapshot internally.
 #[async_trait]
 pub trait ModelResolver: Send + Sync {
+    /// Resolve a model selection to a [`ResolvedModel`] with routing metadata.
+    ///
+    /// If `model` is `None`, returns the default model for the given `user_id`.
+    /// If `model` is `Some`, validates it is non-empty and exists in the catalog.
     async fn resolve_model(
         &self,
         user_id: Uuid,
         model: Option<String>,
+    ) -> Result<ResolvedModel, DomainError>;
+
+    /// List all globally enabled models visible to the user.
+    async fn list_visible_models(&self, user_id: Uuid) -> Result<Vec<ResolvedModel>, DomainError>;
+
+    /// Get a single globally enabled model by ID.
+    ///
+    /// Returns `ModelNotFound` if the model does not exist or is globally disabled.
+    async fn get_visible_model(
+        &self,
+        user_id: Uuid,
+        model_id: &str,
     ) -> Result<ResolvedModel, DomainError>;
 }

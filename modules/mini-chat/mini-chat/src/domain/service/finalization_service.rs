@@ -3,6 +3,8 @@ use std::sync::Arc;
 use modkit_macros::domain_model;
 use tracing::{debug, error, warn};
 
+use mini_chat_sdk::{UsageEvent, UsageTokens};
+
 use crate::domain::error::DomainError;
 use crate::domain::model::billing_outcome::{
     BillingDerivation, BillingDerivationInput, BillingOutcome, derive_billing_outcome,
@@ -10,12 +12,16 @@ use crate::domain::model::billing_outcome::{
 use crate::domain::model::finalization::{
     FinalizationInput, FinalizationOutcome, has_known_usage, settlement_path_from_billing,
 };
-use crate::domain::model::quota::SettlementInput;
+use crate::domain::model::quota::{SettlementInput, SettlementMethod, SettlementOutcome};
 use crate::domain::repos::{
-    CasTerminalParams, InsertAssistantMessageParams, MessageRepository, TurnRepository,
+    CasTerminalParams, InsertAssistantMessageParams, MessageRepository, OutboxEnqueuer,
+    TurnRepository,
 };
 use crate::domain::service::quota_settler::QuotaSettler;
 use crate::infra::db::entity::chat_turn::TurnState;
+
+use crate::domain::ports::MiniChatMetricsPort;
+use crate::domain::ports::metric_labels::{period, result as result_label, trigger};
 
 use super::DbProvider;
 
@@ -37,7 +43,8 @@ pub struct FinalizationService<TR: TurnRepository + 'static, MR: MessageReposito
     turn_repo: Arc<TR>,
     message_repo: Arc<MR>,
     quota_settler: Arc<dyn QuotaSettler>,
-    // TODO(P4): add Arc<dyn OutboxEnqueuer> once UsageEvent type is real (task 6.1)
+    outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
+    metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
 impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> FinalizationService<TR, MR> {
@@ -46,12 +53,16 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         turn_repo: Arc<TR>,
         message_repo: Arc<MR>,
         quota_settler: Arc<dyn QuotaSettler>,
+        outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
+        metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         Self {
             db,
             turn_repo,
             message_repo,
             quota_settler,
+            outbox_enqueuer,
+            metrics,
         }
     }
 
@@ -65,18 +76,23 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
     ///
     /// If message persistence fails on a completed turn, rolls back and
     /// retries as `Failed` with `error_code = "message_persistence_failed"`
-    /// (content durability invariant, DESIGN.md §5.7).
+    /// (content durability invariant).
     pub(crate) async fn finalize_turn_cas(
         &self,
         input: FinalizationInput,
     ) -> Result<FinalizationOutcome, DomainError> {
+        let start = std::time::Instant::now();
         let result = self.try_finalize(&input).await;
 
         match result {
             Ok(outcome) => {
-                // Emit side effects after transaction commit.
+                // Post-commit side effects (outside transaction).
+                if outcome.won_cas {
+                    self.outbox_enqueuer.flush();
+                }
                 if let Some(billing) = outcome.billing_outcome {
-                    Self::emit_post_commit_side_effects(&input, billing);
+                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                    Self::emit_post_commit_side_effects(&input, billing, ms, &*self.metrics);
                 }
                 Ok(outcome)
             }
@@ -102,8 +118,12 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                                 DomainError::internal(format!("unexpected retry failure: {e2}"))
                             }
                         })?;
+                if retry_outcome.won_cas {
+                    self.outbox_enqueuer.flush();
+                }
                 if let Some(billing) = retry_outcome.billing_outcome {
-                    Self::emit_post_commit_side_effects(&retry_input, billing);
+                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                    Self::emit_post_commit_side_effects(&retry_input, billing, ms, &*self.metrics);
                 }
                 Ok(retry_outcome)
             }
@@ -119,6 +139,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
         let turn_repo = Arc::clone(&self.turn_repo);
         let message_repo = Arc::clone(&self.message_repo);
         let quota_settler = Arc::clone(&self.quota_settler);
+        let outbox_enqueuer = Arc::clone(&self.outbox_enqueuer);
         let input = input.clone();
 
         let tx_result = self
@@ -177,6 +198,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         minimal_generation_floor_applied: input.minimal_generation_floor_applied,
                         settlement_path,
                         period_starts: input.period_starts.clone(),
+                        web_search_calls: input.web_search_calls,
                     };
                     let settlement_outcome = quota_settler
                         .settle_in_tx(tx, &scope, settlement_input)
@@ -184,7 +206,7 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                         .map_err(to_db)?;
 
                     // 4. Persist assistant message (completed turns only)
-                    //    Content durability invariant (DESIGN.md §5.7):
+                    //    Content durability invariant:
                     //    "completed ⟹ full assistant content is durably persisted"
                     if input.terminal_state == TurnState::Completed {
                         message_repo
@@ -220,9 +242,11 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
                     }
 
                     // 5. Enqueue outbox event via domain trait
-                    // TODO(P4): enqueue UsageEvent once real type exists (task 6.1)
-                    // let event = build_usage_event(&input, &billing, &settlement_outcome);
-                    // outbox_enqueuer.enqueue_usage_event(tx, event).await.map_err(to_db)?;
+                    let event = build_usage_event(&input, billing, &settlement_outcome);
+                    outbox_enqueuer
+                        .enqueue_usage_event(tx, event)
+                        .await
+                        .map_err(to_db)?;
 
                     // 6. Return outcome
                     Ok(FinalizationOutcome {
@@ -255,31 +279,114 @@ impl<TR: TurnRepository + 'static, MR: MessageRepository + 'static> Finalization
 
     /// Emit metrics and logs after the transaction commits.
     /// These MUST NOT run inside the transaction.
-    fn emit_post_commit_side_effects(input: &FinalizationInput, billing: BillingDerivation) {
-        // Unknown error code → critical log + metric
+    fn emit_post_commit_side_effects(
+        input: &FinalizationInput,
+        billing: BillingDerivation,
+        finalization_ms: f64,
+        metrics: &dyn MiniChatMetricsPort,
+    ) {
+        metrics.record_audit_emit(result_label::OK);
+        metrics.record_finalization_latency_ms(finalization_ms);
+        Self::emit_quota_metrics(input, billing, metrics);
+        Self::emit_billing_side_effects(input, billing, metrics);
+    }
+
+    fn emit_quota_metrics(
+        input: &FinalizationInput,
+        billing: BillingDerivation,
+        metrics: &dyn MiniChatMetricsPort,
+    ) {
+        match billing.settlement_method {
+            SettlementMethod::Actual => {
+                metrics.record_quota_commit(period::DAILY);
+                metrics.record_quota_commit(period::MONTHLY);
+                if let Some(usage) = input.usage {
+                    #[allow(clippy::cast_precision_loss)]
+                    let actual = (usage.input_tokens + usage.output_tokens) as f64;
+                    metrics.record_quota_actual_tokens(actual);
+
+                    // Overshoot: actual tokens exceeded the reserved estimate.
+                    // Overshoot detection: mini_chat_quota_overshoot_total{period}
+                    #[allow(clippy::cast_precision_loss)]
+                    let reserved = input.reserve_tokens as f64;
+                    if actual > reserved {
+                        metrics.record_quota_overshoot(period::DAILY);
+                        metrics.record_quota_overshoot(period::MONTHLY);
+                    }
+                }
+            }
+            SettlementMethod::Estimated | SettlementMethod::Released => {
+                // No overshoot metric here: overshoot measures actual > reserved,
+                // but estimated settlement has no actual usage data to compare.
+                // The reserved estimate simply stays as-is until a future
+                // reconciliation pass settles it with real numbers.
+            }
+        }
+    }
+
+    fn emit_billing_side_effects(
+        input: &FinalizationInput,
+        billing: BillingDerivation,
+        metrics: &dyn MiniChatMetricsPort,
+    ) {
         if billing.unknown_error_code {
             error!(
                 error_code = ?input.error_code,
                 turn_id = %input.turn_id,
                 "CRITICAL: unknown error code in billing derivation"
             );
-            // TODO(P4): increment mini_chat_unknown_error_code_total{code} (task 8.4)
         }
 
-        // Aborted billing outcome → streams_aborted metric
         if billing.outcome == BillingOutcome::Aborted {
-            let trigger = match input.error_code.as_deref() {
-                Some("orphan_timeout") => "orphan_timeout",
-                _ if input.terminal_state == TurnState::Cancelled => "client_disconnect",
-                _ => "internal_abort",
+            let abort_trigger = match input.error_code.as_deref() {
+                Some("orphan_timeout") => trigger::ORPHAN_TIMEOUT,
+                _ if input.terminal_state == TurnState::Cancelled => trigger::CLIENT_DISCONNECT,
+                _ => trigger::INTERNAL_ABORT,
             };
             warn!(
                 turn_id = %input.turn_id,
-                trigger = trigger,
+                trigger = abort_trigger,
                 "stream aborted"
             );
-            // TODO(P4): increment mini_chat_streams_aborted_total{trigger} (task 8.3)
+            metrics.record_streams_aborted(abort_trigger);
         }
+    }
+}
+
+fn build_usage_event(
+    input: &FinalizationInput,
+    billing: BillingDerivation,
+    settlement: &SettlementOutcome,
+) -> UsageEvent {
+    let terminal_state = match input.terminal_state {
+        TurnState::Running => "running",
+        TurnState::Completed => "completed",
+        TurnState::Failed => "failed",
+        TurnState::Cancelled => "cancelled",
+    };
+    let settlement_method = match settlement.settlement_method {
+        SettlementMethod::Actual => "actual",
+        SettlementMethod::Estimated => "estimated",
+        SettlementMethod::Released => "released",
+    };
+    UsageEvent {
+        tenant_id: input.tenant_id,
+        user_id: input.user_id,
+        chat_id: input.chat_id,
+        turn_id: input.turn_id,
+        request_id: input.request_id,
+        effective_model: input.effective_model.clone(),
+        selected_model: input.selected_model.clone(),
+        terminal_state: terminal_state.to_owned(),
+        billing_outcome: billing.outcome.as_str().to_owned(),
+        usage: input.usage.map(|u| UsageTokens {
+            input_tokens: u.input_tokens.cast_unsigned(),
+            output_tokens: u.output_tokens.cast_unsigned(),
+        }),
+        actual_credits_micro: settlement.actual_credits_micro,
+        settlement_method: settlement_method.to_owned(),
+        policy_version_applied: input.policy_version_applied,
+        timestamp: time::OffsetDateTime::now_utc(),
     }
 }
 
@@ -295,6 +402,7 @@ enum FinalizationError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::domain::llm::Usage;
     use crate::domain::model::finalization::FinalizationInput;
     use crate::domain::model::quota::{SettlementMethod, SettlementOutcome};
     use crate::domain::repos::{CreateTurnParams, TurnRepository as TurnRepoTrait};
@@ -303,7 +411,6 @@ mod tests {
     use crate::infra::db::entity::quota_usage::PeriodType;
     use crate::infra::db::repo::message_repo::MessageRepository as MsgRepo;
     use crate::infra::db::repo::turn_repo::TurnRepository as TurnRepo;
-    use crate::infra::llm::Usage;
     use modkit_security::AccessScope;
     use uuid::Uuid;
 
@@ -329,8 +436,57 @@ mod tests {
         }
     }
 
-    fn build_finalization_service(db: Arc<DbProvider>) -> FinalizationService<TurnRepo, MsgRepo> {
-        FinalizationService::new(
+    // ── Noop OutboxEnqueuer (with flush tracking) ──
+
+    #[domain_model]
+    struct NoopOutboxEnqueuer {
+        flush_count: std::sync::atomic::AtomicU32,
+    }
+
+    impl NoopOutboxEnqueuer {
+        fn new() -> Self {
+            Self {
+                flush_count: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+
+        fn flush_count(&self) -> u32 {
+            self.flush_count.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OutboxEnqueuer for NoopOutboxEnqueuer {
+        async fn enqueue_usage_event(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _event: mini_chat_sdk::UsageEvent,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn enqueue_attachment_cleanup(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _event: crate::domain::repos::AttachmentCleanupEvent,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        fn flush(&self) {
+            self.flush_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn build_finalization_service(
+        db: Arc<DbProvider>,
+    ) -> (
+        FinalizationService<TurnRepo, MsgRepo>,
+        Arc<NoopOutboxEnqueuer>,
+    ) {
+        let outbox = Arc::new(NoopOutboxEnqueuer::new());
+        let svc = FinalizationService::new(
             db,
             Arc::new(TurnRepo),
             Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
@@ -338,7 +494,32 @@ mod tests {
                 max: 100,
             })),
             Arc::new(MockQuotaSettler),
-        )
+            outbox.clone(),
+            Arc::new(crate::domain::ports::metrics::NoopMetrics),
+        );
+        (svc, outbox)
+    }
+
+    fn build_finalization_service_with_metrics(
+        db: Arc<DbProvider>,
+        metrics: Arc<dyn MiniChatMetricsPort>,
+    ) -> (
+        FinalizationService<TurnRepo, MsgRepo>,
+        Arc<NoopOutboxEnqueuer>,
+    ) {
+        let outbox = Arc::new(NoopOutboxEnqueuer::new());
+        let svc = FinalizationService::new(
+            db,
+            Arc::new(TurnRepo),
+            Arc::new(MsgRepo::new(modkit_db::odata::LimitCfg {
+                default: 20,
+                max: 100,
+            })),
+            Arc::new(MockQuotaSettler),
+            outbox.clone(),
+            metrics,
+        );
+        (svc, outbox)
     }
 
     /// Insert a parent chat row (FK constraint).
@@ -441,6 +622,7 @@ mod tests {
                 (PeriodType::Daily, today),
                 (PeriodType::Monthly, month_start),
             ],
+            web_search_calls: 3,
         }
     }
 
@@ -449,7 +631,7 @@ mod tests {
     #[tokio::test]
     async fn cas_winner_completes_finalization() {
         let db = mock_db_provider(inmem_db().await);
-        let svc = build_finalization_service(Arc::clone(&db));
+        let (svc, outbox) = build_finalization_service(Arc::clone(&db));
 
         let tenant_id = Uuid::new_v4();
         let chat_id = Uuid::new_v4();
@@ -476,6 +658,11 @@ mod tests {
         assert!(outcome.won_cas, "should be CAS winner");
         assert!(outcome.billing_outcome.is_some());
         assert!(outcome.settlement_outcome.is_some());
+        assert_eq!(
+            outbox.flush_count(),
+            1,
+            "flush should be called once after CAS win"
+        );
 
         // Verify turn is now in completed state
         let conn = db.conn().unwrap();
@@ -494,7 +681,7 @@ mod tests {
     #[tokio::test]
     async fn cas_loser_returns_no_side_effects() {
         let db = mock_db_provider(inmem_db().await);
-        let svc = build_finalization_service(Arc::clone(&db));
+        let (svc, outbox) = build_finalization_service(Arc::clone(&db));
 
         let tenant_id = Uuid::new_v4();
         let chat_id = Uuid::new_v4();
@@ -536,6 +723,12 @@ mod tests {
         assert!(!outcome2.won_cas, "second finalizer should lose CAS");
         assert!(outcome2.billing_outcome.is_none());
         assert!(outcome2.settlement_outcome.is_none());
+        // First call won CAS → 1 flush. Second lost CAS → no additional flush.
+        assert_eq!(
+            outbox.flush_count(),
+            1,
+            "flush should only be called for CAS winner"
+        );
     }
 
     // ── 3.8: Transaction rollback on failure leaves turn in running state ──
@@ -567,6 +760,8 @@ mod tests {
                 max: 100,
             })),
             Arc::new(FailingQuotaSettler),
+            Arc::new(NoopOutboxEnqueuer::new()),
+            Arc::new(crate::domain::ports::metrics::NoopMetrics),
         );
 
         let tenant_id = Uuid::new_v4();
@@ -605,5 +800,64 @@ mod tests {
             .expect("turn should still be running");
         assert_eq!(running.id, turn_id);
         assert_eq!(running.state, TurnState::Running);
+    }
+
+    // ── Metrics emission on successful finalization ──
+
+    #[tokio::test]
+    async fn cas_winner_emits_audit_and_quota_metrics() {
+        use crate::domain::service::test_helpers::TestMetrics;
+        use std::sync::atomic::Ordering;
+
+        let db = mock_db_provider(inmem_db().await);
+        let metrics = Arc::new(TestMetrics::new());
+        let (svc, _outbox) =
+            build_finalization_service_with_metrics(Arc::clone(&db), Arc::clone(&metrics) as _);
+
+        let tenant_id = Uuid::new_v4();
+        let chat_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        let user_id = Uuid::new_v4();
+
+        insert_test_chat(&db, tenant_id, chat_id, user_id).await;
+        insert_running_turn(&db, tenant_id, chat_id, turn_id, request_id).await;
+
+        let input = make_input(
+            tenant_id,
+            chat_id,
+            turn_id,
+            request_id,
+            user_id,
+            TurnState::Completed,
+        );
+        let outcome = svc
+            .finalize_turn_cas(input)
+            .await
+            .expect("finalization should succeed");
+        assert!(outcome.won_cas);
+
+        // Audit emission metrics
+        assert_eq!(
+            metrics.audit_emit.load(Ordering::Relaxed),
+            1,
+            "should record audit_emit"
+        );
+        assert_eq!(
+            metrics.finalization_latency_ms.load(Ordering::Relaxed),
+            1,
+            "should record finalization_latency_ms"
+        );
+        // Quota settlement metrics (daily + monthly)
+        assert_eq!(
+            metrics.quota_commit.load(Ordering::Relaxed),
+            2,
+            "should record quota_commit for daily + monthly"
+        );
+        assert_eq!(
+            metrics.quota_actual_tokens.load(Ordering::Relaxed),
+            1,
+            "should record quota_actual_tokens"
+        );
     }
 }

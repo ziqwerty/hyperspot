@@ -45,12 +45,8 @@ pub(super) fn register_message_routes(
         .standard_errors(openapi)
         .register(router, openapi);
 
-    // TODO: DESIGN.md specifies Google-style custom method `messages:stream`, but Axum's
-    // matchit router doesn't support mixed param+literal segments. Consider adding a
-    // rewrite middleware in api-gateway to map `:verb` → `/verb` so clients can use the
-    // colon syntax externally while Axum routes via `/stream` internally.
-    // POST {prefix}/v1/chats/{id}/messages/stream
-    router = OperationBuilder::post(format!("{prefix}/v1/chats/{{id}}/messages/stream"))
+    // POST {prefix}/v1/chats/{id}/messages:stream
+    router = OperationBuilder::post(format!("{prefix}/v1/chats/{{id}}/messages:stream"))
         .operation_id("mini_chat.stream_message")
         .summary("Send a message and stream the response via SSE")
         .tag(API_TAG)

@@ -323,12 +323,10 @@ pub struct CreateUpstreamRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, utoipa::ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct UpdateUpstreamRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub server: Option<Server>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
+    pub server: Server,
+    pub protocol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -341,10 +339,8 @@ pub struct UpdateUpstreamRequest {
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<CorsConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
+    pub tags: Vec<String>,
+    pub enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -370,22 +366,19 @@ pub struct CreateRouteRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, utoipa::ToSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct UpdateRouteRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "match")]
-    pub match_rules: Option<MatchRules>,
+    #[serde(rename = "match")]
+    pub match_rules: MatchRules,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plugins: Option<PluginsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimitConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<CorsConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority: Option<i32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
+    pub tags: Vec<String>,
+    pub priority: i32,
+    pub enabled: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +980,7 @@ impl From<CreateUpstreamRequest> for domain::CreateUpstreamRequest {
 impl From<UpdateUpstreamRequest> for domain::UpdateUpstreamRequest {
     fn from(r: UpdateUpstreamRequest) -> Self {
         Self {
-            server: r.server.map(Into::into),
+            server: r.server.into(),
             protocol: r.protocol,
             alias: r.alias,
             auth: r.auth.map(Into::into),
@@ -1004,7 +997,7 @@ impl From<UpdateUpstreamRequest> for domain::UpdateUpstreamRequest {
 impl From<UpdateRouteRequest> for domain::UpdateRouteRequest {
     fn from(r: UpdateRouteRequest) -> Self {
         Self {
-            match_rules: r.match_rules.map(Into::into),
+            match_rules: r.match_rules.into(),
             plugins: r.plugins.map(Into::into),
             rate_limit: r.rate_limit.map(Into::into),
             cors: r.cors.map(Into::into),

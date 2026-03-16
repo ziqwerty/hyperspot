@@ -293,7 +293,7 @@ mod tests {
         async fn list_routes(
             &self,
             _: SecurityContext,
-            _: uuid::Uuid,
+            _: Option<uuid::Uuid>,
             _: &oagw_sdk::ListQuery,
         ) -> Result<Vec<oagw_sdk::Route>, oagw_sdk::error::ServiceGatewayError> {
             unimplemented!()

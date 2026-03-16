@@ -392,10 +392,18 @@ async fn e2e_management_lifecycle() {
             .any(|u| u["id"].as_str() == Some(uid.as_str()))
     );
 
-    // Update alias.
+    // Update alias (full replacement via PUT).
     h.api_v1()
-        .patch_upstream(&uid)
-        .with_body(serde_json::json!({"alias": "lifecycle-v2"}))
+        .put_upstream(&uid)
+        .with_body(serde_json::json!({
+            "server": {
+                "endpoints": [{"host": "127.0.0.1", "port": h.mock_port(), "scheme": "http"}]
+            },
+            "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            "alias": "lifecycle-v2",
+            "enabled": true,
+            "tags": []
+        }))
         .expect_status(200)
         .await;
 

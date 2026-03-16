@@ -362,18 +362,18 @@ pub struct CreateUpstreamRequest {
 }
 
 #[domain_model]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdateUpstreamRequest {
-    pub server: Option<Server>,
-    pub protocol: Option<String>,
+    pub server: Server,
+    pub protocol: String,
     pub alias: Option<String>,
     pub auth: Option<AuthConfig>,
     pub headers: Option<HeadersConfig>,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
     pub cors: Option<CorsConfig>,
-    pub tags: Option<Vec<String>>,
-    pub enabled: Option<bool>,
+    pub tags: Vec<String>,
+    pub enabled: bool,
 }
 
 #[domain_model]
@@ -390,13 +390,13 @@ pub struct CreateRouteRequest {
 }
 
 #[domain_model]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdateRouteRequest {
-    pub match_rules: Option<MatchRules>,
+    pub match_rules: MatchRules,
     pub plugins: Option<PluginsConfig>,
     pub rate_limit: Option<RateLimitConfig>,
     pub cors: Option<CorsConfig>,
-    pub tags: Option<Vec<String>>,
-    pub priority: Option<i32>,
-    pub enabled: Option<bool>,
+    pub tags: Vec<String>,
+    pub priority: i32,
+    pub enabled: bool,
 }

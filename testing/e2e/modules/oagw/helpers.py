@@ -111,18 +111,6 @@ def unique_alias(prefix: str = "e2e") -> str:
     short = uuid.uuid4().hex[:8]
     return f"{prefix}-{short}"
 
-
-def parse_gts_uuid(gts_id: str) -> str:
-    """Extract the UUID from a GTS identifier (e.g., 'gts.x.core.oagw.upstream.v1~<uuid>')."""
-    if "~" in gts_id:
-        return gts_id.rsplit("~", 1)[-1]
-    # Fallback: try regex for both hyphenated and non-hyphenated UUIDs.
-    match = re.search(r"[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", gts_id, re.IGNORECASE)
-    if not match:
-        raise ValueError(f"No UUID found in GTS identifier: {gts_id}")
-    return match.group(0)
-
-
 async def create_upstream(
     client: httpx.AsyncClient,
     base_url: str,
@@ -182,10 +170,8 @@ async def create_route(
     **kwargs,
 ) -> dict:
     """Create a route via the Management API and return the response JSON."""
-    upstream_uuid = parse_gts_uuid(upstream_id)
-
     body: dict = {
-        "upstream_id": upstream_uuid,
+        "upstream_id": upstream_id,
         "match": {
             "http": {
                 "methods": methods,
@@ -200,6 +186,85 @@ async def create_route(
 
     resp = await client.post(
         f"{base_url}/oagw/v1/routes",
+        headers={**headers, "content-type": "application/json"},
+        json=body,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def update_upstream(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict,
+    upstream_id: str,
+    mock_url: str,
+    alias: Optional[str] = None,
+    **kwargs,
+) -> dict:
+    """Replace an upstream via PUT and return the response JSON.
+
+    Builds a full replacement body from ``mock_url`` (same as
+    ``create_upstream``).  ``kwargs`` are merged into the body
+    (e.g., ``enabled=False``, ``auth={...}``).
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(mock_url)
+    host = parsed.hostname or "127.0.0.1"
+    scheme = parsed.scheme or "http"
+    port = parsed.port or (443 if scheme == "https" else 80)
+
+    body: dict = {
+        "server": {
+            "endpoints": [{"host": host, "port": port, "scheme": scheme}],
+        },
+        "protocol": HTTP_PROTOCOL_ID,
+        "enabled": True,
+        "tags": [],
+    }
+    if alias is not None:
+        body["alias"] = alias
+
+    body.update(kwargs)
+
+    resp = await client.put(
+        f"{base_url}/oagw/v1/upstreams/{upstream_id}",
+        headers={**headers, "content-type": "application/json"},
+        json=body,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def update_route(
+    client: httpx.AsyncClient,
+    base_url: str,
+    headers: dict,
+    route_id: str,
+    methods: list[str],
+    path: str,
+    **kwargs,
+) -> dict:
+    """Replace a route via PUT and return the response JSON.
+
+    ``kwargs`` are merged into the body (e.g., ``priority=5``,
+    ``tags=["v2"]``, ``enabled=False``).
+    """
+    body: dict = {
+        "match": {
+            "http": {
+                "methods": methods,
+                "path": path,
+            },
+        },
+        "enabled": True,
+        "tags": [],
+        "priority": 0,
+    }
+    body.update(kwargs)
+
+    resp = await client.put(
+        f"{base_url}/oagw/v1/routes/{route_id}",
         headers={**headers, "content-type": "application/json"},
         json=body,
     )

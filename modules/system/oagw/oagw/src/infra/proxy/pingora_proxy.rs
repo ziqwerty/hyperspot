@@ -575,6 +575,36 @@ impl ProxyHttp for PingoraProxy {
                     instance,
                 }
             }
+            pingora_core::ErrorType::ReadError | pingora_core::ErrorType::WriteError => {
+                DomainError::StreamAborted {
+                    detail: format!(
+                        "upstream stream {} error",
+                        if matches!(e.etype, pingora_core::ErrorType::ReadError) {
+                            "read"
+                        } else {
+                            "write"
+                        }
+                    ),
+                    instance,
+                }
+            }
+            pingora_core::ErrorType::ConnectNoRoute
+            | pingora_core::ErrorType::ConnectError
+            | pingora_core::ErrorType::ConnectProxyFailure => DomainError::LinkUnavailable {
+                detail: match &e.etype {
+                    pingora_core::ErrorType::ConnectNoRoute => "no route to upstream host",
+                    pingora_core::ErrorType::ConnectProxyFailure => {
+                        "upstream connect proxy failure"
+                    }
+                    _ => "upstream connection error",
+                }
+                .into(),
+                instance,
+            },
+            pingora_core::ErrorType::ConnectionClosed => DomainError::IdleTimeout {
+                detail: "upstream connection closed (idle timeout)".into(),
+                instance,
+            },
             _ => DomainError::DownstreamError {
                 detail: match &e.etype {
                     pingora_core::ErrorType::ConnectRefused => "upstream connection refused",
@@ -583,7 +613,6 @@ impl ProxyHttp for PingoraProxy {
                         "upstream TLS handshake failed"
                     }
                     pingora_core::ErrorType::InvalidCert => "upstream certificate invalid",
-                    pingora_core::ErrorType::ConnectionClosed => "upstream connection closed",
                     _ => "upstream error",
                 }
                 .into(),

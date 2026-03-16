@@ -2,7 +2,7 @@
 import httpx
 import pytest
 
-from .helpers import create_route, create_upstream, delete_upstream, unique_alias
+from .helpers import create_route, create_upstream, delete_upstream, update_upstream, unique_alias
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_list_upstreams_includes_created(
 async def test_update_upstream_alias(
     oagw_base_url, oagw_headers, mock_upstream_url, mock_upstream,
 ):
-    """PATCH /oagw/v1/upstreams/{id} updates the alias."""
+    """PUT /oagw/v1/upstreams/{id} updates the alias."""
     _ = mock_upstream
     alias = unique_alias("mgmt-upd")
     new_alias = unique_alias("mgmt-upd-v2")
@@ -90,12 +90,11 @@ async def test_update_upstream_alias(
         )
         uid = upstream["id"]
 
-        resp = await client.patch(
-            f"{oagw_base_url}/oagw/v1/upstreams/{uid}",
-            headers={**oagw_headers, "content-type": "application/json"},
-            json={"alias": new_alias},
+        updated = await update_upstream(
+            client, oagw_base_url, oagw_headers, uid, mock_upstream_url,
+            alias=new_alias,
         )
-        assert resp.status_code == 200
+        assert updated["alias"] == new_alias
 
         resp = await client.get(
             f"{oagw_base_url}/oagw/v1/upstreams/{uid}",

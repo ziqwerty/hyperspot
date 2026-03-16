@@ -1320,11 +1320,15 @@ async fn proxy_crud_invalidation_after_update() {
 
     // Update upstream to point to mock_b via REST API (triggers invalidation).
     h.api_v1()
-        .patch_upstream(&upstream_id)
+        .put_upstream(&upstream_id)
         .with_body(json!({
             "server": {
                 "endpoints": [{"host": "127.0.0.1", "port": port_b, "scheme": "http"}]
-            }
+            },
+            "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            "alias": "crud-invalidation",
+            "enabled": true,
+            "tags": []
         }))
         .expect_status(200)
         .await;

@@ -126,8 +126,16 @@ async fn update_upstream_preserves_id() {
 
     let resp = h
         .api_v1()
-        .patch_upstream(&gts_id)
-        .with_body(serde_json::json!({"alias": "openai-v2"}))
+        .put_upstream(&gts_id)
+        .with_body(serde_json::json!({
+            "server": {
+                "endpoints": [{"host": "10.0.0.1", "port": 443, "scheme": "https"}]
+            },
+            "protocol": "gts.x.core.oagw.protocol.v1~x.core.oagw.http.v1",
+            "alias": "openai-v2",
+            "enabled": true,
+            "tags": []
+        }))
         .expect_status(200)
         .await;
 
@@ -369,8 +377,14 @@ async fn update_route_changes_fields() {
 
     let resp = h
         .api_v1()
-        .patch_route(&route_gts_id)
+        .put_route(&route_gts_id)
         .with_body(serde_json::json!({
+            "match": {
+                "http": {
+                    "methods": ["POST"],
+                    "path": "/v1/chat/completions"
+                }
+            },
             "priority": 10,
             "tags": ["updated"],
             "enabled": false

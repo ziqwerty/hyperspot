@@ -159,14 +159,10 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
         // Snapshot old endpoints before applying server update (needed for alias enforcement).
         let old_endpoints = existing.server.endpoints.clone();
 
-        // Apply partial update.
-        if let Some(server) = req.server {
-            validate_endpoints(&server.endpoints)?;
-            existing.server = server;
-        }
-        if let Some(protocol) = req.protocol {
-            existing.protocol = protocol;
-        }
+        // Full replacement: validate and apply server.
+        validate_endpoints(&req.server.endpoints)?;
+        existing.server = req.server;
+        existing.protocol = req.protocol;
 
         // Enforce alias re-evaluation when endpoints change.
         let endpoints_changed = existing.server.endpoints != old_endpoints;
@@ -195,14 +191,7 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
 
         // Validate ancestor bind constraints if the resulting alias matches
         // an ancestor upstream.
-        let effective_auth = req.auth.as_ref().or(existing.auth.as_ref());
-        let effective_rate_limit = req.rate_limit.as_ref().or(existing.rate_limit.as_ref());
-        let effective_plugins = req.plugins.as_ref().or(existing.plugins.as_ref());
-        let effective_cors = req.cors.as_ref().or(existing.cors.as_ref());
-        let has_overrides = effective_auth.is_some()
-            || effective_rate_limit.is_some()
-            || effective_plugins.is_some()
-            || effective_cors.is_some();
+        let has_overrides = req.auth.is_some() || req.rate_limit.is_some() || req.plugins.is_some() || req.cors.is_some();
 
         if has_overrides || endpoints_changed || req.alias.is_some() {
             let tenant_chain = self.build_tenant_chain(ctx).await?;
@@ -211,37 +200,26 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
                 &tenant_chain,
                 &existing.alias,
                 &BindOverrides {
-                    auth: effective_auth,
-                    rate_limit: effective_rate_limit,
-                    plugins: effective_plugins,
-                    cors: effective_cors,
+                    auth: req.auth.as_ref(),
+                    rate_limit: req.rate_limit.as_ref(),
+                    plugins: req.plugins.as_ref(),
+                    cors: req.cors.as_ref(),
                 },
             )
             .await?;
         }
 
-        if let Some(auth) = req.auth {
-            existing.auth = Some(auth);
+        // Full replacement: directly assign all fields (None = unset).
+        existing.auth = req.auth;
+        existing.headers = req.headers;
+        existing.plugins = req.plugins;
+        existing.rate_limit = req.rate_limit;
+        if let Some(ref cors) = req.cors {
+            crate::domain::cors::validate_cors_config(cors)?;
         }
-        if let Some(headers) = req.headers {
-            existing.headers = Some(headers);
-        }
-        if let Some(plugins) = req.plugins {
-            existing.plugins = Some(plugins);
-        }
-        if let Some(rate_limit) = req.rate_limit {
-            existing.rate_limit = Some(rate_limit);
-        }
-        if let Some(cors) = req.cors {
-            crate::domain::cors::validate_cors_config(&cors)?;
-            existing.cors = Some(cors);
-        }
-        if let Some(tags) = req.tags {
-            existing.tags = tags;
-        }
-        if let Some(enabled) = req.enabled {
-            existing.enabled = enabled;
-        }
+        existing.cors = req.cors;
+        existing.tags = req.tags;
+        existing.enabled = req.enabled;
 
         self.upstreams
             .update(existing)
@@ -337,28 +315,17 @@ impl ControlPlaneService for ControlPlaneServiceImpl {
             .await
             .map_err(|_| DomainError::not_found("route", id))?;
 
-        if let Some(match_rules) = req.match_rules {
-            existing.match_rules = match_rules;
+        // Full replacement: directly assign all fields (None = unset).
+        existing.match_rules = req.match_rules;
+        existing.plugins = req.plugins;
+        existing.rate_limit = req.rate_limit;
+        if let Some(ref cors) = req.cors {
+            crate::domain::cors::validate_cors_config(cors)?;
         }
-        if let Some(plugins) = req.plugins {
-            existing.plugins = Some(plugins);
-        }
-        if let Some(rate_limit) = req.rate_limit {
-            existing.rate_limit = Some(rate_limit);
-        }
-        if let Some(cors) = req.cors {
-            crate::domain::cors::validate_cors_config(&cors)?;
-            existing.cors = Some(cors);
-        }
-        if let Some(tags) = req.tags {
-            existing.tags = tags;
-        }
-        if let Some(priority) = req.priority {
-            existing.priority = priority;
-        }
-        if let Some(enabled) = req.enabled {
-            existing.enabled = enabled;
-        }
+        existing.cors = req.cors;
+        existing.tags = req.tags;
+        existing.priority = req.priority;
+        existing.enabled = req.enabled;
 
         self.check_route_overlap(&existing, Some(existing.id))
             .await?;
@@ -1724,6 +1691,33 @@ mod tests {
         }
     }
 
+    /// Build an UpdateUpstreamRequest that mirrors the given upstream (full replacement).
+    fn make_update_from_upstream(u: &Upstream) -> UpdateUpstreamRequest {
+        UpdateUpstreamRequest {
+            server: u.server.clone(),
+            protocol: u.protocol.clone(),
+            alias: Some(u.alias.clone()),
+            auth: u.auth.clone(),
+            headers: u.headers.clone(),
+            plugins: u.plugins.clone(),
+            rate_limit: u.rate_limit.clone(),
+            tags: u.tags.clone(),
+            enabled: u.enabled,
+        }
+    }
+
+    /// Build an UpdateRouteRequest that mirrors the given route (full replacement).
+    fn make_update_from_route(r: &Route) -> UpdateRouteRequest {
+        UpdateRouteRequest {
+            match_rules: r.match_rules.clone(),
+            plugins: r.plugins.clone(),
+            rate_limit: r.rate_limit.clone(),
+            tags: r.tags.clone(),
+            priority: r.priority,
+            enabled: r.enabled,
+        }
+    }
+
     fn make_create_route(upstream_id: Uuid) -> CreateRouteRequest {
         CreateRouteRequest {
             upstream_id,
@@ -1763,17 +1757,9 @@ mod tests {
         assert_eq!(fetched.id, u.id);
 
         // Update alias (allowed for IP-based endpoints)
-        let updated = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    alias: Some("openai-v2".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.alias = Some("openai-v2".into());
+        let updated = svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
         assert_eq!(updated.alias, "openai-v2");
         assert_eq!(updated.id, u.id);
 
@@ -1933,16 +1919,9 @@ mod tests {
             .unwrap();
 
         // Disable the upstream.
-        svc.update_upstream(
-            &ctx,
-            u.id,
-            UpdateUpstreamRequest {
-                enabled: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.enabled = false;
+        svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
 
         let chain = svc.build_tenant_chain(&ctx).await.unwrap();
         let err = svc
@@ -3478,19 +3457,14 @@ mod tests {
             .unwrap();
 
         // Child tries to update auth — should fail because ancestor is enforce.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.auth = Some(AuthConfig {
+            plugin_type: "oauth2".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        });
         let err = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    auth: Some(AuthConfig {
-                        plugin_type: "oauth2".into(),
-                        sharing: SharingMode::Inherit,
-                        config: None,
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap_err();
         match err {
@@ -3530,15 +3504,10 @@ mod tests {
             .unwrap();
 
         // Child updates alias to match ancestor — with allow-all enforcer this passes.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.alias = Some("openai".into());
         let updated = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    alias: Some("openai".into()),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap();
         assert_eq!(updated.alias, "openai");
@@ -3574,15 +3543,10 @@ mod tests {
 
         // Alias-only update to match ancestor — must fail because the child's
         // existing auth override conflicts with the ancestor's enforce mode.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.alias = Some("openai".into());
         let err = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    alias: Some("openai".into()),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap_err();
         match err {
@@ -3612,19 +3576,14 @@ mod tests {
             .unwrap();
 
         // Update auth — no ancestor match, should succeed without permission checks.
+        let mut update_req = make_update_from_upstream(&child_upstream);
+        update_req.auth = Some(AuthConfig {
+            plugin_type: "oauth2".into(),
+            sharing: SharingMode::Inherit,
+            config: None,
+        });
         let updated = svc
-            .update_upstream(
-                &child_ctx,
-                child_upstream.id,
-                UpdateUpstreamRequest {
-                    auth: Some(AuthConfig {
-                        plugin_type: "oauth2".into(),
-                        sharing: SharingMode::Inherit,
-                        config: None,
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&child_ctx, child_upstream.id, update_req)
             .await
             .unwrap();
         assert_eq!(updated.auth.unwrap().plugin_type, "oauth2");
@@ -4320,15 +4279,10 @@ mod tests {
         assert_eq!(u.alias, "api.openai.com");
 
         // Try to override alias on hostname-based upstream — should fail.
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.alias = Some("custom".into());
         let err = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    alias: Some("custom".into()),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&ctx, u.id, update_req)
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::Validation { .. }));
@@ -4347,23 +4301,16 @@ mod tests {
         assert_eq!(u.alias, "api.openai.com");
 
         // Update endpoints to a different host — alias should recompute.
-        let updated = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    server: Some(Server {
-                        endpoints: vec![Endpoint {
-                            scheme: Scheme::Https,
-                            host: "api.anthropic.com".into(),
-                            port: 443,
-                        }],
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.server = Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Https,
+                host: "api.anthropic.com".into(),
+                port: 443,
+            }],
+        };
+        update_req.alias = None; // let alias be re-derived
+        let updated = svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
         assert_eq!(updated.alias, "api.anthropic.com");
     }
 
@@ -4379,21 +4326,17 @@ mod tests {
             .unwrap();
 
         // Switch to IP endpoints without providing alias.
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.server = Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Https,
+                host: "10.0.0.1".into(),
+                port: 443,
+            }],
+        };
+        update_req.alias = None; // no explicit alias provided
         let err = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    server: Some(Server {
-                        endpoints: vec![Endpoint {
-                            scheme: Scheme::Https,
-                            host: "10.0.0.1".into(),
-                            port: 443,
-                        }],
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_upstream(&ctx, u.id, update_req)
             .await
             .unwrap_err();
         assert!(matches!(err, DomainError::Validation { .. }));
@@ -4411,24 +4354,16 @@ mod tests {
             .unwrap();
 
         // Switch to IP endpoints with explicit alias.
-        let updated = svc
-            .update_upstream(
-                &ctx,
-                u.id,
-                UpdateUpstreamRequest {
-                    server: Some(Server {
-                        endpoints: vec![Endpoint {
-                            scheme: Scheme::Https,
-                            host: "10.0.0.1".into(),
-                            port: 443,
-                        }],
-                    }),
-                    alias: Some("my-backend".into()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_upstream(&u);
+        update_req.server = Server {
+            endpoints: vec![Endpoint {
+                scheme: Scheme::Https,
+                host: "10.0.0.1".into(),
+                port: 443,
+            }],
+        };
+        update_req.alias = Some("my-backend".into());
+        let updated = svc.update_upstream(&ctx, u.id, update_req).await.unwrap();
         assert_eq!(updated.alias, "my-backend");
     }
 
@@ -4879,7 +4814,7 @@ mod tests {
             .unwrap();
 
         // Route A: POST /v1/chat, priority 0.
-        let route_a = svc
+        let _route_a = svc
             .create_route(&ctx, make_create_route(u.id))
             .await
             .unwrap();
@@ -4890,23 +4825,18 @@ mod tests {
         let route_b = svc.create_route(&ctx, req_b).await.unwrap();
 
         // Update route B's path to match route A → conflict.
+        let mut update_req = make_update_from_route(&route_b);
+        update_req.match_rules = MatchRules {
+            http: Some(HttpMatch {
+                methods: vec![HttpMethod::Post],
+                path: "/v1/chat/completions".into(),
+                query_allowlist: vec![],
+                path_suffix_mode: PathSuffixMode::Append,
+            }),
+            grpc: None,
+        };
         let err = svc
-            .update_route(
-                &ctx,
-                route_b.id,
-                UpdateRouteRequest {
-                    match_rules: Some(MatchRules {
-                        http: Some(HttpMatch {
-                            methods: vec![HttpMethod::Post],
-                            path: "/v1/chat/completions".into(),
-                            query_allowlist: vec![],
-                            path_suffix_mode: PathSuffixMode::Append,
-                        }),
-                        grpc: None,
-                    }),
-                    ..Default::default()
-                },
-            )
+            .update_route(&ctx, route_b.id, update_req)
             .await
             .unwrap_err();
         assert!(
@@ -4932,17 +4862,9 @@ mod tests {
             .unwrap();
 
         // Update tags only — same (path, priority, method) but it's the same route.
-        let updated = svc
-            .update_route(
-                &ctx,
-                route.id,
-                UpdateRouteRequest {
-                    tags: Some(vec!["new-tag".into()]),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        let mut update_req = make_update_from_route(&route);
+        update_req.tags = vec!["new-tag".into()];
+        let updated = svc.update_route(&ctx, route.id, update_req).await.unwrap();
         assert_eq!(updated.tags, vec!["new-tag".to_string()]);
     }
 
@@ -4968,15 +4890,10 @@ mod tests {
         let route_b = svc.create_route(&ctx, req_b).await.unwrap();
 
         // Enable route B → conflict with route A.
+        let mut update_req = make_update_from_route(&route_b);
+        update_req.enabled = true;
         let err = svc
-            .update_route(
-                &ctx,
-                route_b.id,
-                UpdateRouteRequest {
-                    enabled: Some(true),
-                    ..Default::default()
-                },
-            )
+            .update_route(&ctx, route_b.id, update_req)
             .await
             .unwrap_err();
         assert!(

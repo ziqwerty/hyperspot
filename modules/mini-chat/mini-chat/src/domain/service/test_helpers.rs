@@ -999,7 +999,7 @@ impl ServiceGatewayClientV1 for MockOagwGateway {
     async fn list_routes(
         &self,
         _: modkit_security::SecurityContext,
-        _: uuid::Uuid,
+        _: Option<uuid::Uuid>,
         _: &oagw_sdk::ListQuery,
     ) -> Result<Vec<oagw_sdk::Route>, ServiceGatewayError> {
         unimplemented!()

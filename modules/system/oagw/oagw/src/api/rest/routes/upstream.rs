@@ -69,11 +69,11 @@ pub(super) fn register(mut router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .standard_errors(openapi)
         .register(router, openapi);
 
-    // PATCH /oagw/v1/upstreams/{id} — Update upstream
-    router = OperationBuilder::patch("/oagw/v1/upstreams/{id}")
+    // PUT /oagw/v1/upstreams/{id} — Update upstream
+    router = OperationBuilder::put("/oagw/v1/upstreams/{id}")
         .operation_id("oagw.update_upstream")
         .summary("Update upstream")
-        .description("Partially update an existing upstream service configuration")
+        .description("Replace an existing upstream service configuration")
         .tag(API_TAG)
         .path_param("id", "Upstream GTS identifier")
         .authenticated()

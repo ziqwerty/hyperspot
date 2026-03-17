@@ -427,7 +427,9 @@ async fn cleanup_outbox_tables(db_url: &str) {
     for table in TABLES {
         let sql = match backend {
             sea_orm::DbBackend::Postgres => format!("TRUNCATE TABLE {table} CASCADE"),
-            _ => format!("DELETE FROM {table}"),
+            sea_orm::DbBackend::Sqlite | sea_orm::DbBackend::MySql => {
+                format!("DELETE FROM {table}")
+            }
         };
         db.execute(Statement::from_string(backend, sql))
             .await
@@ -523,11 +525,27 @@ mod mysql_container {
     pub fn get_mysql(rt: &Runtime) -> &'static MysqlContainer {
         MYSQL.get_or_init(|| {
             rt.block_on(async {
+                // MySQL tuning for benchmark parity with Postgres:
+                // - READ-COMMITTED: eliminates InnoDB gap-lock deadlocks when
+                //   multiple sequencers claim/delete from adjacent partitions
+                // - skip-log-bin: disables binary log fsync, the #1 bottleneck
+                //   (COMMIT is 105x slower than PG with binlog enabled)
+                // - innodb-flush-log-at-trx-commit=2: flush redo log once/sec
+                //   instead of per-commit (ok for benchmarks, not production)
+                //
+                // Profiling showed MySQL COMMIT at 9.5ms vs PG at 0.09ms.
+                // claim_incoming (SELECT+DELETE) was 8x slower due to InnoDB
+                // row-level lock manager overhead vs Postgres MVCC.
                 let container = ContainerRequest::from(Mysql::default())
                     .with_env_var("MYSQL_ROOT_PASSWORD", "root")
                     .with_env_var("MYSQL_USER", "user")
                     .with_env_var("MYSQL_PASSWORD", "pass")
                     .with_env_var("MYSQL_DATABASE", "bench")
+                    .with_cmd([
+                        "--transaction-isolation=READ-COMMITTED",
+                        "--skip-log-bin",
+                        "--innodb-flush-log-at-trx-commit=2",
+                    ])
                     .start()
                     .await
                     .unwrap();
@@ -583,6 +601,11 @@ mod mariadb_container {
                     .with_env_var("MYSQL_USER", "user")
                     .with_env_var("MYSQL_PASSWORD", "pass")
                     .with_env_var("MYSQL_DATABASE", "bench")
+                    .with_cmd([
+                        "--transaction-isolation=READ-COMMITTED",
+                        "--skip-log-bin",
+                        "--innodb-flush-log-at-trx-commit=2",
+                    ])
                     .start()
                     .await
                     .unwrap();

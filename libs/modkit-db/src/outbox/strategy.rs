@@ -61,7 +61,6 @@ struct OutgoingRow {
     id: i64,
     body_id: i64,
     seq: i64,
-    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, FromQueryResult)]
@@ -69,6 +68,7 @@ struct BodyRow {
     id: i64,
     payload: Vec<u8>,
     payload_type: String,
+    created_at: chrono::DateTime<chrono::Utc>,
 }
 
 // ---- Shared helpers ----
@@ -123,7 +123,7 @@ async fn read_messages(
             seq: row.seq,
             payload: body.payload.clone(),
             payload_type: body.payload_type.clone(),
-            created_at: row.created_at,
+            created_at: body.created_at,
             attempts: proc_row.attempts,
         });
     }

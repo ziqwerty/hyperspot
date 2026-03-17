@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use futures_util::FutureExt as _;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use tracing::Instrument;
@@ -13,7 +12,6 @@ use super::action::{Directive, WorkerAction};
 use super::bulkhead::Bulkhead;
 use super::listener::WorkerListener;
 use super::pacing::PacingConfig;
-use super::poker::poker;
 
 /// Extract a human-readable message from a panic payload.
 fn panic_message(payload: &Box<dyn Any + Send>) -> String {
@@ -55,7 +53,6 @@ pub struct WorkerBuilder<P = ()> {
     bulkhead: Bulkhead,
     notifiers: Vec<Arc<Notify>>,
     listeners: Vec<Arc<dyn WorkerListener<P>>>,
-    poker_handles: Vec<JoinHandle<()>>,
     panic_policy: PanicPolicy,
     pacing: Option<PacingConfig>,
 }
@@ -69,7 +66,6 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
             bulkhead: Bulkhead::default(),
             notifiers: Vec::new(),
             listeners: Vec::new(),
-            poker_handles: Vec::new(),
             panic_policy: PanicPolicy::default(),
             pacing: None,
         }
@@ -113,16 +109,11 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
 
     /// Build the worker task.
     #[must_use]
-    pub fn build<A: WorkerAction<Payload = P>>(mut self, action: A) -> WorkerTask<A> {
+    pub fn build<A: WorkerAction<Payload = P>>(self, action: A) -> WorkerTask<A> {
         let pacing = self.pacing.unwrap_or_default();
 
-        // Auto-create a poker from pacing.idle_interval if > ZERO.
-        if !pacing.idle_interval.is_zero() {
-            let (n, handle) = poker(pacing.idle_interval, self.cancel.clone());
-            self.notifiers.push(n);
-            self.poker_handles.push(handle);
-        }
-
+        // Pokers (periodic wake timers) are the caller's responsibility
+        // via .notifier(). Taskward handles pacing only.
         WorkerTask {
             name: self.name,
             action,
@@ -130,7 +121,6 @@ impl<P: Send + Sync + 'static> WorkerBuilder<P> {
             cancel: self.cancel,
             bulkhead: self.bulkhead,
             listeners: self.listeners,
-            poker_handles: self.poker_handles,
             panic_policy: self.panic_policy,
             pacing,
         }
@@ -149,7 +139,6 @@ pub struct WorkerTask<A: WorkerAction> {
     cancel: CancellationToken,
     bulkhead: Bulkhead,
     listeners: Vec<Arc<dyn WorkerListener<A::Payload>>>,
-    poker_handles: Vec<JoinHandle<()>>,
     panic_policy: PanicPolicy,
     pacing: PacingConfig,
 }
@@ -175,19 +164,6 @@ impl<A: WorkerAction> WorkerTask<A> {
         let result = AssertUnwindSafe(self.run_inner().instrument(span))
             .catch_unwind()
             .await;
-
-        // Always cancel and join poker tasks — even after a panic.
-        // Without this, Propagate-policy panics skip cleanup and
-        // leave orphaned poker tokio tasks.
-        self.cancel.cancel();
-        for handle in std::mem::take(&mut self.poker_handles) {
-            match handle.await {
-                Err(e) if e.is_panic() => {
-                    tracing::error!(error = %e, "poker task panicked");
-                }
-                Ok(()) | Err(_) => {}
-            }
-        }
 
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
@@ -391,7 +367,6 @@ mod tests {
         PacingConfig {
             min_interval: Duration::ZERO,
             active_interval: Duration::ZERO,
-            idle_interval: Duration::ZERO,
             ramp_step: Duration::ZERO,
         }
     }
@@ -432,7 +407,6 @@ mod tests {
         // idle_interval=ZERO suppresses auto-poker
         let worker = WorkerBuilder::new("test", cancel)
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 ..Default::default()
             })
             .build(action);
@@ -446,7 +420,6 @@ mod tests {
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 ..Default::default()
             })
             .notifier(notify)
@@ -463,7 +436,6 @@ mod tests {
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 ..Default::default()
             })
             .notifier(n1)
@@ -474,32 +446,31 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn builder_tuning_idle_interval_adds_poker_notifier() {
+    async fn builder_tuning_idle_interval_defers_poker_to_run() {
         let cancel = CancellationToken::new();
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
             .pacing(PacingConfig {
-                idle_interval: Duration::from_secs(1),
                 ..Default::default()
             })
             .build(action);
-        // tuning.idle_interval > ZERO → auto-created poker notifier
-        assert_eq!(worker.notifiers.len(), 1);
+        // Poker is deferred to run() — build() must not tokio::spawn.
+        assert_eq!(worker.notifiers.len(), 0);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn builder_notifier_plus_tuning_poker() {
+    async fn builder_notifier_plus_deferred_poker() {
         let cancel = CancellationToken::new();
         let notify = Arc::new(Notify::new());
         let action = MockAction::new(vec![]);
         let worker = WorkerBuilder::new("test", cancel)
             .notifier(notify)
             .pacing(PacingConfig {
-                idle_interval: Duration::from_secs(1),
                 ..Default::default()
             })
             .build(action);
-        assert_eq!(worker.notifiers.len(), 2);
+        // Only the explicit notifier at build time; poker deferred to run().
+        assert_eq!(worker.notifiers.len(), 1);
     }
 
     #[test]
@@ -641,7 +612,6 @@ mod tests {
         // No notifiers at all — Idle blocks forever, only cancel wakes
         let worker = WorkerBuilder::new("test", cancel.clone())
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 ..Default::default()
             })
             .build(action);
@@ -768,7 +738,6 @@ mod tests {
         let count = action.call_count();
         let worker = WorkerBuilder::new("test", cancel.clone())
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 ..Default::default()
             })
             .build(action);
@@ -876,10 +845,7 @@ mod tests {
         let notify = Arc::new(Notify::new());
         notify.notify_one(); // break initial Idle
         let worker = WorkerBuilder::new("test", cancel.clone())
-            .pacing(PacingConfig {
-                idle_interval: Duration::from_millis(10),
-                ..zero_pacing()
-            })
+            .pacing(PacingConfig { ..zero_pacing() })
             .notifier(notify)
             .build(CheckCancel {
                 saw_cancelled: false,
@@ -1258,7 +1224,6 @@ mod tests {
                 active_interval: Duration::from_millis(30),
                 min_interval: Duration::from_millis(10),
                 ramp_step: Duration::from_millis(10),
-                ..zero_pacing()
             })
             .notifier(notify)
             .build(action);

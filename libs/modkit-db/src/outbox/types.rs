@@ -451,7 +451,6 @@ impl From<&WorkerTuning> for super::taskward::PacingConfig {
         Self {
             min_interval: t.min_interval,
             active_interval: t.active_interval,
-            idle_interval: t.idle_interval,
             ramp_step: t.ramp_step,
         }
     }

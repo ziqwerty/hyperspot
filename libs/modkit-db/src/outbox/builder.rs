@@ -50,8 +50,11 @@ fn build_processor_worker<S: super::strategy::ProcessingStrategy + 'static>(
 ) -> (String, Pin<Box<dyn Future<Output = ()> + Send>>) {
     let processor = PartitionProcessor::new(strategy, ctx.pid, ctx.tuning.clone(), ctx.db.clone());
     let name = format!("processor-{}", ctx.pid);
+    let (poker_notify, _poker_handle) =
+        super::taskward::poker(ctx.tuning.idle_interval, ctx.cancel.clone());
     let mut builder = WorkerBuilder::<ProcessorReport>::new(&name, ctx.cancel.clone())
         .pacing(&ctx.tuning)
+        .notifier(poker_notify)
         .notifier(Arc::clone(&ctx.partition_notify))
         .notifier(Arc::clone(&ctx.start_notify))
         .bulkhead(Bulkhead::new(

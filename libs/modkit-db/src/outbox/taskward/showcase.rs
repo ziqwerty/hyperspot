@@ -20,6 +20,7 @@ mod tests {
     };
     use crate::outbox::taskward::listener::TracingListener;
     use crate::outbox::taskward::pacing::PacingConfig;
+    use crate::outbox::taskward::poker::poker;
     use crate::outbox::taskward::task::{PanicPolicy, WorkerBuilder};
 
     // ---- Scenario: Long-interval worker reschedules immediately when work
@@ -81,11 +82,10 @@ mod tests {
             call_count: call_count.clone(),
         };
 
+        let (poker_notify, _poker_handle) = poker(h * 4, cancel.clone());
         let worker = WorkerBuilder::new("batch-processor", cancel.clone())
-            .pacing(PacingConfig {
-                idle_interval: h * 4,
-                ..Default::default()
-            }) // 4h poker
+            .notifier(poker_notify)
+            .pacing(PacingConfig::default())
             .build(action);
 
         // Cancel after 16h — enough for 3 calls + some idle.
@@ -151,12 +151,11 @@ mod tests {
         };
 
         // Poker fires every 5h (safety net) — but notifiers fire much sooner.
+        let (poker_notify, _poker_handle) = poker(h * 5, cancel.clone());
         let worker = WorkerBuilder::new("event-worker", cancel.clone())
+            .notifier(poker_notify)
             .notifier(notify.clone())
-            .pacing(PacingConfig {
-                idle_interval: h * 5,
-                ..Default::default()
-            })
+            .pacing(PacingConfig::default())
             .build(action);
 
         // Stored permit → initial Idle resolves immediately.
@@ -251,7 +250,6 @@ mod tests {
             .bulkhead(bulkhead)
             .listener(TracingListener)
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 active_interval: Duration::ZERO,
                 min_interval: Duration::ZERO,
                 ramp_step: Duration::ZERO,
@@ -322,7 +320,6 @@ mod tests {
 
         let worker = WorkerBuilder::new("multi-source", cancel.clone())
             .pacing(PacingConfig {
-                idle_interval: Duration::ZERO,
                 active_interval: Duration::ZERO,
                 min_interval: Duration::ZERO,
                 ramp_step: Duration::ZERO,
@@ -501,11 +498,11 @@ mod tests {
             cooldown: h, // 1h cooldown between sweeps
         };
 
+        let (poker_notify, _poker_handle) = poker(Duration::from_secs(600), cancel.clone());
+
         let worker = WorkerBuilder::new("vacuum", cancel.clone())
-            .pacing(PacingConfig {
-                idle_interval: Duration::from_secs(600),
-                ..Default::default()
-            }) // 10min poker to break initial Idle
+            .notifier(poker_notify)
+            .pacing(PacingConfig::default()) // 10min poker to break initial Idle
             .build(action);
 
         let cancel_c = cancel.clone();
@@ -575,12 +572,12 @@ mod tests {
             call_count: bad_count.clone(),
         };
 
+        let (poker_notify, _poker_handle) = poker(Duration::from_secs(1), cancel.clone());
+
         let bad_worker = WorkerBuilder::new("bad", cancel.clone())
             .notifier(notify.clone())
-            .pacing(PacingConfig {
-                idle_interval: Duration::from_secs(1),
-                ..Default::default()
-            })
+            .notifier(poker_notify)
+            .pacing(PacingConfig::default())
             .on_panic(PanicPolicy::CatchAndRetry)
             .build(bad_action);
 
@@ -618,21 +615,20 @@ mod tests {
             call_count: good_count.clone(),
         };
 
+        let (bad_poker, _bad_poker_handle) = poker(Duration::from_secs(1), cancel.clone());
+        let (good_poker, _good_poker_handle) = poker(Duration::from_secs(1), cancel.clone());
+
         let bad_worker = WorkerBuilder::new("bad", cancel.clone())
             .notifier(notify.clone())
-            .pacing(PacingConfig {
-                idle_interval: Duration::from_secs(1),
-                ..Default::default()
-            })
+            .notifier(bad_poker)
+            .pacing(PacingConfig::default())
             .on_panic(PanicPolicy::CatchAndRetry)
             .build(bad_action);
 
         let good_worker = WorkerBuilder::new("good", cancel.clone())
             .notifier(notify.clone())
-            .pacing(PacingConfig {
-                idle_interval: Duration::from_secs(1),
-                ..Default::default()
-            })
+            .notifier(good_poker)
+            .pacing(PacingConfig::default())
             .build(good_action);
 
         let mut task_set = crate::outbox::taskward::task_set::TaskSet::new(cancel.clone());

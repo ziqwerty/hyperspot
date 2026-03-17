@@ -12,7 +12,7 @@ use super::prioritizer::SharedPrioritizer;
 use super::stats::{StatsListener, StatsRegistry, StatsReporter};
 use super::taskward::{
     BackoffConfig, Bulkhead, BulkheadConfig, ConcurrencyLimit, PanicPolicy, TaskSet,
-    TracingListener, WorkerBuilder,
+    TracingListener, WorkerBuilder, poker,
 };
 use super::types::{
     OutboxConfig, OutboxError, OutboxProfile, Partitions, SequencerConfig, WorkerTuning,
@@ -358,8 +358,10 @@ impl OutboxBuilder {
             #[allow(unused_mut)]
             let vacuum = VacuumTask::new(ctx.db.clone(), tuning.batch_size as usize);
             let name = format!("vacuum-{i}");
+            let (poker_notify, _poker_handle) = poker(tuning.idle_interval, ctx.cancel.clone());
             let mut builder = WorkerBuilder::<VacuumReport>::new(&name, ctx.cancel.clone())
                 .pacing(tuning)
+                .notifier(poker_notify)
                 .notifier(Arc::clone(ctx.start_notify))
                 .bulkhead(Bulkhead::new(
                     &name,
@@ -403,8 +405,10 @@ impl OutboxBuilder {
             prioritizer: Arc::clone(prioritizer),
         };
         let name = "cold-reconciler";
+        let (poker_notify, _poker_handle) = poker(tuning.idle_interval, ctx.cancel.clone());
         let worker = WorkerBuilder::new(name, ctx.cancel.clone())
             .pacing(tuning)
+            .notifier(poker_notify)
             .notifier(Arc::clone(ctx.start_notify))
             .listener(TracingListener)
             .on_panic(PanicPolicy::CatchAndRetry)
@@ -428,11 +432,9 @@ impl OutboxBuilder {
             .expect("stats registry mutex not poisoned");
         let reporter = StatsReporter::new(Arc::new(registry));
         let name = "stats-reporter";
+        let (poker_notify, _poker_handle) = poker(interval, ctx.cancel.clone());
         let worker = WorkerBuilder::new(name, ctx.cancel.clone())
-            .pacing(super::taskward::PacingConfig {
-                idle_interval: interval,
-                ..Default::default()
-            })
+            .notifier(poker_notify)
             .on_panic(PanicPolicy::CatchAndRetry)
             .build(reporter);
         ctx.task_set.spawn(name, worker.run());

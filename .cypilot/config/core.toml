@@ -8,7 +8,7 @@ project_root = ".."
 format = "Cypilot"
 path = "config/kits/sdlc"
 source = "github:cyberfabric/cyber-pilot-kit-sdlc"
-version = "1.1.1"
+version = "1.2.0"
 
 [kits.sdlc.resources]
 [kits.sdlc.resources.adr_template]
@@ -100,3 +100,6 @@ path = "config/kits/sdlc/SKILL.md"
 
 [kits.sdlc.resources.agents]
 path = "config/kits/sdlc/AGENTS.md"
+
+[kits.sdlc.resources.workflow_migrate_openspec]
+path = "config/kits/sdlc/workflows/migrate-openspec.md"

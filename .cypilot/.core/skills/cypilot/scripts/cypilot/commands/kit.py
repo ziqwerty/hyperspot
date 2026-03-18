@@ -1602,9 +1602,32 @@ def update_kit(
         # @cpt-end:cpt-cypilot-algo-kit-update:p1:inst-file-level-diff
 
         # @cpt-begin:cpt-cypilot-algo-kit-update:p1:inst-update-core-toml
-        # Update version in core.toml from source (always, even if some files declined)
-        if source_version:
-            _register_kit_in_core_toml(config_dir, kit_slug, source_version, cypilot_dir, source=source)
+        # Sync resource bindings: merge existing with new resources from manifest
+        _merged_resources: Optional[Dict[str, Dict[str, str]]] = None
+        if _manifest is not None:
+            # Read existing bindings from core.toml
+            _existing_bindings = _read_kits_from_core_toml(config_dir).get(kit_slug, {}).get("resources", {})
+            _merged_resources = {}
+            # Preserve existing bindings
+            for res_id, binding in _existing_bindings.items():
+                if isinstance(binding, dict):
+                    _merged_resources[res_id] = binding
+                elif isinstance(binding, str):
+                    _merged_resources[res_id] = {"path": binding}
+            # Add new resources from manifest (if not already present)
+            kit_root_rel = f"config/kits/{kit_slug}"
+            for res in _manifest.resources:
+                if res.id not in _merged_resources:
+                    # New resource — use default path
+                    binding_path = f"{kit_root_rel}/{res.default_path}"
+                    _merged_resources[res.id] = {"path": binding_path}
+
+        # Update version and resources in core.toml
+        if source_version or _merged_resources:
+            _register_kit_in_core_toml(
+                config_dir, kit_slug, source_version, cypilot_dir,
+                source=source, resources=_merged_resources,
+            )
         # @cpt-end:cpt-cypilot-algo-kit-update:p1:inst-update-core-toml
 
     # @cpt-begin:cpt-cypilot-algo-kit-update:p1:inst-collect-metadata

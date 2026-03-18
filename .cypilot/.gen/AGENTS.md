@@ -8,7 +8,7 @@ ALWAYS open and follow `{cypilot_path}/.core/schemas/artifacts.schema.json` WHEN
 
 ALWAYS open and follow `{cypilot_path}/.core/architecture/specs/artifacts-registry.md` WHEN working with artifacts.toml
 
-# Cypilot Kit: SDLC (`cypilot-sdlc`)
+# Cypilot Kit: SDLC (`sdlc`)
 
 Agent quick reference.
 

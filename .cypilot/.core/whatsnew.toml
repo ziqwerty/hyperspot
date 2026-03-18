@@ -149,3 +149,10 @@ details = """\
 - **Cross-repo ID resolution** — `validate` and `list-ids` gain `--local-only` and `--source` flags for workspace-aware operations
 - **WorkspaceContext** — context upgrade from `CypilotContext` with lazy loading and graceful degradation for unreachable sources\
 """
+
+["v3.0.15-beta"]
+summary = "Secret scanner fix, kit update fix"
+details = """\
+- **Secret scanner fix** — sanitized high-entropy string in `git_utils.py` to avoid false positives from trufflehog3 and similar tools
+- **Fix: new manifest resources registered during kit update** — when a kit adds new resources in `manifest.toml`, `cpt kit update` now merges them into `core.toml` resource bindings instead of ignoring them\
+"""

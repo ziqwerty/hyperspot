@@ -9,6 +9,12 @@ release-plz updates this file in the Release PR.
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-authz-plugin-v0.1.10...cf-static-authz-plugin-v0.1.11) - 2026-03-19
+
+### Other
+
+- updated the following local packages: cf-modkit-security, cf-modkit-macros, cf-modkit, cf-authz-resolver-sdk
+
 ## [0.1.11](https://github.com/cyberfabric/cyberfabric-core/compare/cf-static-tr-plugin-v0.1.10...cf-static-tr-plugin-v0.1.11) - 2026-03-18
 
 ### Other

@@ -14,12 +14,12 @@
       "description": "Current job status"
     },
     "request": {
-      "$ref": "gts://gts.x.llmgw.core.request.v1~",
-      "description": "Original request"
+      "$ref": "gts://gts.x.llmgw.core.create_response_body.v1~",
+      "description": "Original request body"
     },
     "result": {
-      "$ref": "gts://gts.x.llmgw.core.response.v1~",
-      "description": "Job result (when completed)"
+      "$ref": "gts://gts.x.llmgw.core.response_resource.v1~",
+      "description": "Response resource (when completed)"
     },
     "error": {
       "$ref": "gts://gts.x.llmgw.async.error.v1~",

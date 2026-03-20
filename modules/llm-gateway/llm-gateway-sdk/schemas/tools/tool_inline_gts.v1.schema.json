@@ -1,20 +1,24 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "gts://gts.x.llmgw.tools.tool_inline_gts.v1~",
+  "$id": "gts://gts.x.llmgw.tools.tool.v1~x.llmgw.tools.tool_inline_gts.v1~",
   "title": "ToolInlineGTS",
-  "description": "Inline GTS schema definition for a tool",
-  "type": "object",
-  "properties": {
-    "type": {
-      "type": "string",
-      "const": "inline_gts",
-      "description": "Discriminator for tool type"
-    },
-    "schema": {
-      "$ref": "gts://gts.x.llmgw.tools.schema.v1~",
-      "description": "Inline GTS schema definition"
+  "description": "Inline GTS schema definition for a tool.",
+  "allOf": [
+    { "$ref": "gts://gts.x.llmgw.tools.tool.v1~" },
+    {
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "inline_gts",
+          "description": "Tool type discriminator."
+        },
+        "schema": {
+          "$ref": "gts://gts.x.llmgw.tools.schema.v1~",
+          "description": "Inline GTS schema definition."
+        }
+      },
+      "required": ["type", "schema"]
     }
-  },
-  "required": ["type", "schema"],
-  "additionalProperties": false
+  ],
+  "unevaluatedProperties": false
 }

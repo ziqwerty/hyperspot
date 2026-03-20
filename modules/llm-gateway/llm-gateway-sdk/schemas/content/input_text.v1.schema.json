@@ -1,17 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "gts://gts.x.llmgw.content.text_content.v1~",
-  "title": "TextContent",
-  "description": "Plain text content part",
+  "$id": "gts://gts.x.llmgw.content.input_text.v1~",
+  "title": "InputText",
+  "description": "Input text content part",
   "type": "object",
   "properties": {
     "type": {
       "type": "string",
-      "const": "text",
+      "const": "input_text",
+      "default": "input_text",
       "description": "Content type discriminator"
     },
     "text": {
       "type": "string",
+      "maxLength": 10485760,
       "description": "Text content"
     }
   },

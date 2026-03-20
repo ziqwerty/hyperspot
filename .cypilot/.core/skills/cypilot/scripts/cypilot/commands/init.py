@@ -273,22 +273,9 @@ def _compute_managed_block(install_dir: str) -> str:
     # @cpt-begin:cpt-cypilot-algo-core-infra-inject-root-agents:p1:inst-compute-block
     return (
         f"{MARKER_START}\n"
-        f"## Cypilot AI Agent Navigation\n"
-        f"\n"
-        f"**Remember these variables while working in this project:**\n"
-        f"\n"
         f"```toml\n"
         f'cypilot_path = "{install_dir}"\n'
         f"```\n"
-        f"\n"
-        f"## Navigation Rules\n"
-        f"\n"
-        f"ALWAYS open and follow `{{cypilot_path}}/.gen/AGENTS.md` FIRST\n"
-        f"\n"
-        f"ALWAYS open and follow `{{cypilot_path}}/config/AGENTS.md` FIRST\n"
-        f"\n"
-        f"ALWAYS invoke `{{cypilot_path}}/.core/skills/cypilot/SKILL.md` WHEN user asks to do something with Cypilot\n"
-        f"\n"
         f"{MARKER_END}"
     )
     # @cpt-end:cpt-cypilot-algo-core-infra-inject-root-agents:p1:inst-compute-block
@@ -340,38 +327,9 @@ def _inject_root_agents(project_root: Path, install_dir: str, dry_run: bool = Fa
     return _inject_managed_block(project_root / "AGENTS.md", install_dir, dry_run)
 
 # @cpt-begin:cpt-cypilot-flow-core-infra-project-init:p1:inst-init-inject-claude
-def _compute_claude_block() -> str:
-    return (
-        f"{MARKER_START}\n"
-        f"STOP and READ `AGENTS.md` in project root before ANY tool calls or skill invocation\n"
-        f"{MARKER_END}"
-    )
-
 def _inject_root_claude(project_root: Path, install_dir: str, dry_run: bool = False) -> str:
     """Inject or update root CLAUDE.md managed block. Returns action taken."""
-    claude_file = project_root / "CLAUDE.md"
-    expected_block = _compute_claude_block()
-
-    if not claude_file.is_file():
-        if not dry_run:
-            claude_file.write_text(expected_block + "\n", encoding="utf-8")
-        return "created"
-
-    content = claude_file.read_text(encoding="utf-8")
-
-    if MARKER_START in content and MARKER_END in content:
-        start_idx = content.index(MARKER_START)
-        end_idx = content.index(MARKER_END) + len(MARKER_END)
-        current_block = content[start_idx:end_idx]
-        if current_block == expected_block.strip():
-            return "unchanged"
-        new_content = content[:start_idx] + expected_block + content[end_idx:]
-    else:
-        new_content = expected_block + "\n\n" + content
-
-    if not dry_run:
-        claude_file.write_text(new_content, encoding="utf-8")
-    return "updated"
+    return _inject_managed_block(project_root / "CLAUDE.md", install_dir, dry_run)
 # @cpt-end:cpt-cypilot-flow-core-infra-project-init:p1:inst-init-inject-claude
 
 def cmd_init(argv: List[str]) -> int:

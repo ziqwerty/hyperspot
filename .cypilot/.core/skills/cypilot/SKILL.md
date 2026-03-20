@@ -8,22 +8,23 @@ description: "Invoke when user asks to do something with Cypilot, or wants to an
 
 <!-- toc -->
 
-- [Goal](#goal)
-- [Preconditions](#preconditions)
-- [⚠️ MUST Instruction Semantics ⚠️](#must-instruction-semantics)
-- [Agent Acknowledgment](#agent-acknowledgment)
-- [Execution Logging](#execution-logging)
-- [Variables](#variables)
-  - [Template Variable Resolution](#template-variable-resolution)
-- [CLI Resolution](#cli-resolution)
-- [Protocol Guard](#protocol-guard)
-- [Cypilot Mode](#cypilot-mode)
-- [Agent-Safe Invocation](#agent-safe-invocation)
-- [Quick Commands (No Protocol)](#quick-commands-no-protocol)
-- [Workflow Routing](#workflow-routing)
-- [Command Reference](#command-reference)
-- [Auto-Configuration](#auto-configuration)
-- [Project Configuration](#project-configuration)
+- [Cypilot Unified Tool](#cypilot-unified-tool)
+  - [Goal](#goal)
+  - [Preconditions](#preconditions)
+  - [⚠️ MUST Instruction Semantics ⚠️](#️-must-instruction-semantics-️)
+  - [Agent Acknowledgment](#agent-acknowledgment)
+  - [Execution Logging](#execution-logging)
+  - [Variables](#variables)
+    - [Template Variable Resolution](#template-variable-resolution)
+  - [CLI Resolution](#cli-resolution)
+  - [Protocol Guard](#protocol-guard)
+  - [Cypilot Mode](#cypilot-mode)
+  - [Agent-Safe Invocation](#agent-safe-invocation)
+  - [Quick Commands (No Protocol)](#quick-commands-no-protocol)
+  - [Workflow Routing](#workflow-routing)
+  - [Command Reference](#command-reference)
+  - [Auto-Configuration](#auto-configuration)
+  - [Project Configuration](#project-configuration)
 
 <!-- /toc -->
 
@@ -73,7 +74,7 @@ Example:
 
 | Variable | Value | Use |
 |---|---|---|
-| `{cypilot_path}` | Directory containing this `../../SKILL.md` | Base path for all Cypilot-relative references |
+| `{cypilot_path}` | Directory path resolved from root `AGENTS.md` | Base path for all Cypilot-relative references |
 | `{cypilot_mode}` | `on` or `off` | Current Cypilot mode state |
 | `{cpt_cmd}` | `cpt` or `python3 {cypilot_path}/.core/skills/cypilot/scripts/cypilot.py` | Resolved CLI entrypoint |
 | `{cpt_installed}` | `true` or `false` | Whether the `cpt` CLI is available |

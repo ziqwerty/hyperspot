@@ -182,3 +182,11 @@ details = """\
 - **Post-compaction TOC fix** — marker-based `validate-toc` now expects the same heading set that `toc` generates, so documents with secondary `H1` sections such as `# MUST HAVE` / `# MUST NOT HAVE` validate correctly with `--max-level 2`
 - **Regression coverage added** — test coverage now includes the marker-based TOC validation case with secondary `H1` sections in a single document\
 """
+
+["v3.2.1-beta"]
+summary = "Compact root markers, unified CLAUDE.md injection"
+details = """\
+- **Compact root marker blocks** — removed verbose navigation rules from `AGENTS.md` and `CLAUDE.md` managed blocks; now contains only the `cypilot_path` TOML definition
+- **Unified CLAUDE.md injection** — `_inject_root_claude()` now reuses `_inject_managed_block()` for consistent block generation
+- **Variable description fix** — `{cypilot_path}` documentation updated to clarify it's resolved from root `AGENTS.md`\
+"""

@@ -50,11 +50,14 @@ uuid = { workspace = true }
 
 utoipa = { workspace = true }
 http = { workspace = true }
+http-body = { workspace = true }
+bytes = { workspace = true }
 rust-embed = { workspace = true }
 
 [dev-dependencies]
 futures-core = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing-subscriber = { workspace = true }
 
 [features]
 grpc = []

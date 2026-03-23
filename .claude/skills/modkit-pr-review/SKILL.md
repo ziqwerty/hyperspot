@@ -24,6 +24,15 @@ Apply **Rust idioms and engineering** (`docs/pr-review/modkit-rust-review.md`) t
 
 Apply **ModKit framework compliance** (`docs/pr-review/modkit-framework-compliance-review.md`) **only** to `.rs` files that belong to ModKit-owned code. A file is ModKit-owned when **any** of these signals is present:
 
+Apply **Rust unit test quality review** (`docs/pr-review/modkit-tests-quality-review.md`) to every changed Rust test you can identify in the diff, including:
+- `#[test]` functions
+- async tests such as `#[tokio::test]`
+- test modules such as `#[cfg(test)] mod tests`
+- assertions added or modified inside production files or dedicated test files
+- integration tests under `tests/`
+- test-only helper code when it materially affects test validity
+
+
 1. **Cargo.toml signals** — the nearest `Cargo.toml` (same crate or workspace member) declares a `modkit` dependency/feature, or the crate name starts with `modkit`.
 2. **Path heuristics** — the file lives under a path that matches ModKit module conventions (e.g. `modules/*/src/`, `crates/modkit-*/`, or similar namespace).
 3. **Source-level symbols** — the file imports from ModKit crates (`use modkit_*`, `use crate::` inside a modkit crate) or references ModKit-specific types/traits such as `OperationBuilder`, `SecureConn`, `SecureORM`, `ClientHub`, or `ModuleLifecycle`.
@@ -73,8 +82,9 @@ For each `.rs` file in the diff:
 
 a. Read the full current file from the repo (not just the diff hunk) to understand context.
 b. Apply **modkit-rust-review.md** checklist items — idiomatic Rust, error handling, async safety, ownership, testing, etc.
-c. **Only if the file was classified as ModKit-owned in Step 3**, also apply **modkit-framework-compliance-review.md** checklist items — SDK pattern, OperationBuilder, SecureConn, module layout, error types, etc.
-d. Record each finding with: checklist ID, severity, file path, line number, issue description, fix.
+c. Apply **modkit-tests-quality-review.md** checklist items - to every changed Rust test you can identify in the diff
+d. **Only if the file was classified as ModKit-owned in Step 3**, also apply **modkit-framework-compliance-review.md** checklist items — SDK pattern, OperationBuilder, SecureConn, module layout, error types, etc.
+e. Record each finding with: checklist ID, severity, file path, line number, issue description, fix.
 
 ### Step 5: Filter and deduplicate
 

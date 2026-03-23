@@ -344,6 +344,9 @@ impl ApiGateway {
             middleware::http_metrics::http_metrics_middleware,
         ));
 
+        // 3.5) Structured access log (runs after push_req_id populates XRequestId extension)
+        router = router.layer(from_fn(middleware::access_log::access_log_middleware));
+
         // 3) Record request_id into span + extensions (requires span to exist first => must be inner to Trace)
         router = router.layer(from_fn(middleware::request_id::push_req_id_to_extensions));
 
@@ -511,10 +514,13 @@ impl ApiGateway {
             }
         };
 
-        axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
     }
 
     /// Check if `handler_id` is already registered (returns true if duplicate)

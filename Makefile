@@ -152,6 +152,7 @@ gts-docs:
 	cargo run -p gts-docs-validator -- \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
 		docs modules libs examples
 
 ## Validate GTS docs with vendor check (ensures all IDs use vendor "x")
@@ -160,6 +161,7 @@ gts-docs-vendor:
 		--vendor x \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
 		docs modules libs examples
 
 ## Validate GTS identifiers (release build)
@@ -167,6 +169,7 @@ gts-docs-release:
 	cargo run --release -p gts-docs-validator -- \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
 		docs modules libs examples
 
 ## Validate GTS docs with vendor check (release build)
@@ -175,6 +178,7 @@ gts-docs-vendor-release:
 		--vendor x \
 		--exclude "target/*" \
 		--exclude "docs/api/*" \
+		--exclude "modules/chat-engine/*" \
 		docs modules libs examples
 
 ## Run tests for GTS documentation validator

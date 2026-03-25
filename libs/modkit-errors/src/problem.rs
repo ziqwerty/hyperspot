@@ -2,6 +2,7 @@
 
 use http::StatusCode;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 #[cfg(feature = "utoipa")]
 use utoipa::ToSchema;
@@ -56,13 +57,20 @@ pub struct Problem {
     /// A human-readable explanation specific to this occurrence of the problem.
     pub detail: String,
     /// A URI reference that identifies the specific occurrence of the problem.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instance: String,
     /// Optional machine-readable error code defined by the application.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub code: String,
     /// Optional trace id useful for tracing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     /// Optional validation errors for 4xx problems.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<ValidationViolation>>,
+    /// Optional structured context (e.g. `resource_type`, `resource_name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Value>,
 }
 
 /// Individual validation violation for a specific field or property.
@@ -113,6 +121,7 @@ impl Problem {
             code: String::new(),
             trace_id: None,
             errors: None,
+            context: None,
         }
     }
 
@@ -138,6 +147,11 @@ impl Problem {
 
     pub fn with_errors(mut self, errors: Vec<ValidationViolation>) -> Self {
         self.errors = Some(errors);
+        self
+    }
+
+    pub fn with_context(mut self, context: Value) -> Self {
+        self.context = Some(context);
         self
     }
 }
@@ -210,7 +224,7 @@ mod tests {
 
     #[test]
     fn problem_deserializes_status_from_u16() {
-        let json = r#"{"type":"about:blank","title":"Not Found","status":404,"detail":"Resource not found","instance":"","code":"","trace_id":null,"errors":null}"#;
+        let json = r#"{"type":"about:blank","title":"Not Found","status":404,"detail":"Resource not found"}"#;
         let p: Problem = serde_json::from_str(json).unwrap();
         assert_eq!(p.status, StatusCode::NOT_FOUND);
     }

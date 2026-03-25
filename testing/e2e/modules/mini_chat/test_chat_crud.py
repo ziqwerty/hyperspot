@@ -35,7 +35,8 @@ class TestCreateChat:
     def test_create_chat_invalid_model(self, server):
         resp = httpx.post(f"{API_PREFIX}/chats", json={"model": "nonexistent-model"})
         assert resp.status_code in (400, 404)
-        assert "code" in resp.json()
+        body = resp.json()
+        assert "type" in body and "status" in body and "detail" in body
 
 
 @pytest.mark.multi_provider
@@ -56,7 +57,8 @@ class TestGetChat:
         fake_id = str(uuid.uuid4())
         resp = httpx.get(f"{API_PREFIX}/chats/{fake_id}")
         assert resp.status_code == 404
-        assert "code" in resp.json()
+        body = resp.json()
+        assert "type" in body and "status" in body and "detail" in body
 
 
 @pytest.mark.multi_provider
@@ -142,4 +144,5 @@ class TestDeleteChat:
         fake_id = str(uuid.uuid4())
         resp = httpx.delete(f"{API_PREFIX}/chats/{fake_id}")
         assert resp.status_code == 404
-        assert "code" in resp.json()
+        body = resp.json()
+        assert "type" in body and "status" in body and "detail" in body

@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use modkit_macros::domain_model;
+use tokio::sync::Semaphore;
 use tracing::instrument;
 
 use crate::domain::error::DomainError;
@@ -73,18 +75,30 @@ impl<R: UsersRepository + 'static, CR: CitiesRepository, AR: AddressesRepository
     }
 }
 
-async fn audit_get_user_access_best_effort<
-    R: UsersRepository,
-    CR: CitiesRepository,
-    AR: AddressesRepository,
->(
-    svc: &UsersService<R, CR, AR>,
-    id: Uuid,
-) {
-    let audit_result = svc.audit.get_user_access(id).await;
-    if let Err(e) = audit_result {
-        tracing::debug!("Audit service call failed (continuing): {}", e);
-    }
+/// Cap concurrent best-effort audit tasks to avoid unbounded spawns.
+static AUDIT_SEMAPHORE: Semaphore = Semaphore::const_new(10);
+
+/// Timeout for a single best-effort audit call.
+const AUDIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn audit_get_user_access_best_effort(audit: &Arc<dyn AuditPort>, id: Uuid) {
+    let Ok(permit) = AUDIT_SEMAPHORE.try_acquire() else {
+        tracing::debug!("Audit semaphore full, skipping best-effort audit for user {id}");
+        return;
+    };
+    let audit = Arc::clone(audit);
+    tokio::spawn(async move {
+        let _permit = permit;
+        match tokio::time::timeout(AUDIT_TIMEOUT, audit.get_user_access(id)).await {
+            Ok(Err(e)) => {
+                tracing::debug!("Audit service call failed (continuing): {}", e);
+            }
+            Err(_) => {
+                tracing::debug!("Audit call timed out for user {id}, dropping");
+            }
+            Ok(Ok(())) => {}
+        }
+    });
 }
 
 // Business logic methods
@@ -97,7 +111,7 @@ impl<R: UsersRepository + 'static, CR: CitiesRepository, AR: AddressesRepository
 
         let conn = self.db.conn().map_err(DomainError::from)?;
 
-        audit_get_user_access_best_effort(self, id).await;
+        audit_get_user_access_best_effort(&self.audit, id);
 
         // Prefetch: load user to extract owner_tenant_id for PDP.
         // PDP returns a narrow `eq` constraint instead of expanding the subtree.

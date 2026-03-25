@@ -413,7 +413,6 @@ mod tests {
             assert!(parsed.get("status").is_some());
             assert!(parsed.get("title").is_some());
             assert!(parsed.get("detail").is_some());
-            assert!(parsed.get("instance").is_some());
         }
     }
 

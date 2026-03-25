@@ -78,7 +78,7 @@ pub struct OopRunOptions {
     /// Path to configuration file
     pub config_path: Option<PathBuf>,
 
-    /// Log verbosity level (0=default, 1=info, 2=debug, 3=trace)
+    /// Log verbosity level (0=default, 1=debug, 2=trace)
     pub verbose: u8,
 
     /// Print effective configuration and exit

@@ -74,10 +74,6 @@ pub use users_info_sdk::{
     UpdateCityRequest, UpdateUserRequest, User, UserPatch, UsersInfoClientV1, UsersInfoError,
 };
 
-// === ERROR CATALOG ===
-// Generated error catalog from gts/errors.json
-pub mod errors;
-
 // === MODULE DEFINITION ===
 // ModKit needs access to the module struct for instantiation
 pub mod module;

@@ -1,0 +1,38 @@
+[package]
+name = "users-info-server"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Standalone server binary for the users-info example module"
+
+[lints]
+workspace = true
+
+[dependencies]
+# ModKit bootstrap (host mode)
+modkit = { workspace = true, features = ["bootstrap"] }
+
+# System modules (minimum set for users-info)
+api_gateway = { package = "cf-api-gateway", path = "../../../../modules/system/api-gateway" }
+grpc_hub = { package = "cf-grpc-hub", path = "../../../../modules/system/grpc-hub" }
+types_registry = { package = "cf-types-registry", path = "../../../../modules/system/types-registry/types-registry" }
+types = { path = "../../../../modules/system/types" }
+authn-resolver = { package = "cf-authn-resolver", path = "../../../../modules/system/authn-resolver/authn-resolver" }
+authz-resolver = { package = "cf-authz-resolver", path = "../../../../modules/system/authz-resolver/authz-resolver" }
+tenant-resolver = { package = "cf-tenant-resolver", path = "../../../../modules/system/tenant-resolver/tenant-resolver" }
+
+# Static plugins for standalone operation
+static-authn-plugin = { package = "cf-static-authn-plugin", path = "../../../../modules/system/authn-resolver/plugins/static-authn-plugin" }
+static-authz-plugin = { package = "cf-static-authz-plugin", path = "../../../../modules/system/authz-resolver/plugins/static-authz-plugin" }
+single-tenant-tr-plugin = { package = "cf-single-tenant-tr-plugin", path = "../../../../modules/system/tenant-resolver/plugins/single-tenant-tr-plugin" }
+
+# Target module
+users-info = { path = "../users-info", default-features = true }
+
+# Runtime dependencies
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }

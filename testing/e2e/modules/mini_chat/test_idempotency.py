@@ -106,7 +106,7 @@ class TestIdempotency:
         t.join(timeout=60)
 
         assert second_resp.status_code == 409
-        assert second_resp.json().get("code") == "request_id_conflict"
+        assert second_resp.json().get("title") == "request_id_conflict"
 
     @pytest.mark.xfail(reason="BUG: 409 missing error_code request_id_conflict")
     def test_failed_turn_same_request_id_409(self, request, chat, mock_provider):
@@ -142,7 +142,7 @@ class TestIdempotency:
             timeout=30,
         )
         assert second_resp.status_code == 409
-        assert second_resp.json().get("code") == "request_id_conflict"
+        assert second_resp.json().get("title") == "request_id_conflict"
 
     @pytest.mark.xfail(reason="BUG: 409 missing error_code request_id_conflict")
     def test_cancelled_turn_same_request_id_409(self, chat, mock_provider):
@@ -183,7 +183,7 @@ class TestIdempotency:
             timeout=30,
         )
         assert second_resp.status_code == 409
-        assert second_resp.json().get("code") == "request_id_conflict"
+        assert second_resp.json().get("title") == "request_id_conflict"
 
     def test_replay_priority_over_parallel_check(self, chat, mock_provider):
         """Replay of a completed turn returns 200 even while another turn is running."""

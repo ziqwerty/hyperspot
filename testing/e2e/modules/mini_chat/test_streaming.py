@@ -249,7 +249,7 @@ class TestStreamPreflightErrors:
         )
         assert resp.status_code == 404
         body = resp.json()
-        assert "code" in body
+        assert "type" in body and "status" in body and "detail" in body
 
     def test_empty_content_rejected(self, provider_chat):
         resp = httpx.post(
@@ -260,7 +260,7 @@ class TestStreamPreflightErrors:
         )
         assert resp.status_code == 400
         body = resp.json()
-        assert "code" in body, f"Error response must have 'code' field: {body}"
+        assert "type" in body and "status" in body and "detail" in body, f"Error response must be RFC 7807 format: {body}"
 
     def test_missing_content_rejected(self, provider_chat):
         resp = httpx.post(
@@ -272,7 +272,7 @@ class TestStreamPreflightErrors:
         assert resp.status_code in (400, 422)
         if resp.headers.get("content-type", "").startswith("application/json"):
             body = resp.json()
-            assert "code" in body
+            assert "type" in body and "status" in body and "detail" in body
 
     def test_invalid_attachment_id_rejected(self, provider_chat):
         """04-04: Invalid attachment ID format should be rejected."""

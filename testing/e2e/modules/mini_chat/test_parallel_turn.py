@@ -63,7 +63,7 @@ class TestParallelTurn:
         assert first_result[0].status_code == 200
 
         assert second_resp.status_code == 409
-        assert second_resp.json().get("code") == "generation_in_progress"
+        assert second_resp.json().get("title") == "generation_in_progress"
 
     @pytest.mark.multi_provider
     def test_new_stream_succeeds_after_terminal(self, chat, mock_provider):

@@ -123,7 +123,7 @@ class TestTurnRetry:
             timeout=10,
         )
         assert retry_resp.status_code == 400
-        assert retry_resp.json().get("code") == "invalid_turn_state"
+        assert retry_resp.json().get("title") == "invalid_turn_state"
 
         t.join(timeout=60)
 
@@ -245,7 +245,7 @@ class TestTurnDelete:
             timeout=10,
         )
         assert del_resp.status_code == 400
-        assert del_resp.json().get("code") == "invalid_turn_state"
+        assert del_resp.json().get("title") == "invalid_turn_state"
 
         t.join(timeout=60)
 

@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         #[arg(short, long)]
         config: Option<std::path::PathBuf>,
 
-        /// Log verbosity level (-v info, -vv debug, -vvv trace)
+        /// Log verbosity level (-v debug, -vv trace)
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
     }

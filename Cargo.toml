@@ -55,6 +55,7 @@ members = [
     "modules/system/module-orchestrator",
     "examples/modkit/users-info/users-info-sdk",
     "examples/modkit/users-info/users-info",
+    "examples/modkit/users-info/users-info-server",
     "examples/oop-modules/calculator-gateway/calculator-gateway-sdk",
     "examples/oop-modules/calculator-gateway/calculator-gateway",
     "examples/oop-modules/calculator/calculator-sdk",

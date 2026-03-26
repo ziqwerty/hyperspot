@@ -1609,11 +1609,8 @@ async fn proxy_unreachable_backend_returns_rfc9457_problem_body() {
 // negative-8.1 (body-validation): Streaming body exceeding max_body_size returns 413 PayloadTooLarge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn proxy_streaming_body_exceeding_limit_returns_413() {
-    // Gate the upstream response so it cannot reply before the body-forwarding
-    // task detects the limit breach — eliminates the race between the upstream
-    // response and the PayloadTooLarge signal.
     let mut guard = MockGuard::new();
-    let _gate = guard.mock_gated(
+    guard.mock(
         "POST",
         "/v1/upload",
         MockResponse {

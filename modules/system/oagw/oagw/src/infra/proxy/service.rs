@@ -779,6 +779,9 @@ impl DataPlaneService for DataPlaneServiceImpl {
                     }
                 }
                 if exceeded {
+                    // Shutdown sends EOF to Pingora's read side before we
+                    // signal the limit breach (drop alone won't close the pipe).
+                    let _ = client_write.shutdown().await;
                     let _ = limit_tx.send(total_bytes);
                 } else {
                     // Chunked terminator: signals end-of-body to Pingora.
@@ -797,11 +800,6 @@ impl DataPlaneService for DataPlaneServiceImpl {
 
             // 9. Parse response from the read half, but short-circuit to 413
             //    if the body-forwarding task signals a limit breach.
-            //
-            // TODO(hardening): a fast upstream can respond before the body-forwarder
-            // detects the limit breach, causing the client to see 200 instead of 413.
-            // Fix: wrap the write half in a LimitedAsyncWrite that returns io::Error
-            // at the byte limit, so Pingora aborts the exchange before responding.
             let resp_future =
                 tokio::time::timeout(timeout, session_bridge::parse_response_stream(client_read));
             tokio::select! {

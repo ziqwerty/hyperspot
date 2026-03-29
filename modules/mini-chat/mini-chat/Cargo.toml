@@ -56,6 +56,9 @@ multer = "3.1"
 # Encoding
 base64 = { workspace = true }
 
+# Image processing (thumbnail generation)
+image = { workspace = true }
+
 # Serde and JSON
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -49,6 +49,9 @@ pub struct MiniChatConfig {
     /// Cleanup background worker for soft-deleted chat resources.
     #[serde(default)]
     pub cleanup_worker: CleanupWorkerConfig,
+    /// Image thumbnail generation settings.
+    #[serde(default)]
+    pub thumbnail: ThumbnailConfig,
 }
 
 /// Which file/vector-store implementation to use for RAG operations.
@@ -400,6 +403,7 @@ impl Default for MiniChatConfig {
             orphan_watchdog: OrphanWatchdogConfig::default(),
             thread_summary_worker: ThreadSummaryWorkerConfig::default(),
             cleanup_worker: CleanupWorkerConfig::default(),
+            thumbnail: ThumbnailConfig::default(),
         }
     }
 }
@@ -808,6 +812,78 @@ impl RagConfig {
     }
 }
 
+// ── Thumbnail config ────────────────────────────────────────────────────
+
+fn default_thumbnail_width() -> u32 {
+    128
+}
+fn default_thumbnail_height() -> u32 {
+    128
+}
+fn default_thumbnail_max_bytes() -> usize {
+    131_072 // 128 KiB
+}
+fn default_thumbnail_max_pixels() -> u64 {
+    100_000_000
+}
+fn default_thumbnail_max_decode_bytes() -> usize {
+    33_554_432 // 32 MiB
+}
+
+/// Configuration for server-generated image thumbnails (DESIGN.md §B.6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThumbnailConfig {
+    /// Target thumbnail width in pixels.
+    #[serde(default = "default_thumbnail_width")]
+    pub width: u32,
+    /// Target thumbnail height in pixels.
+    #[serde(default = "default_thumbnail_height")]
+    pub height: u32,
+    /// Maximum decoded thumbnail size in bytes (128 KiB).
+    #[serde(default = "default_thumbnail_max_bytes")]
+    pub max_bytes: usize,
+    /// Maximum source image pixel count before skipping thumbnail generation.
+    #[serde(default = "default_thumbnail_max_pixels")]
+    pub max_pixels: u64,
+    /// Maximum bytes the image decoder may allocate before aborting.
+    #[serde(default = "default_thumbnail_max_decode_bytes")]
+    pub max_decode_bytes: usize,
+}
+
+impl Default for ThumbnailConfig {
+    fn default() -> Self {
+        Self {
+            width: default_thumbnail_width(),
+            height: default_thumbnail_height(),
+            max_bytes: default_thumbnail_max_bytes(),
+            max_pixels: default_thumbnail_max_pixels(),
+            max_decode_bytes: default_thumbnail_max_decode_bytes(),
+        }
+    }
+}
+
+impl ThumbnailConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.width == 0 {
+            return Err("thumbnail width must be > 0".into());
+        }
+        if self.height == 0 {
+            return Err("thumbnail height must be > 0".into());
+        }
+        if self.max_bytes == 0 {
+            return Err("thumbnail max_bytes must be > 0".into());
+        }
+        if self.max_pixels == 0 {
+            return Err("thumbnail max_pixels must be > 0".into());
+        }
+        if self.max_decode_bytes == 0 {
+            return Err("thumbnail max_decode_bytes must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
 fn default_url_prefix() -> String {
     DEFAULT_URL_PREFIX.to_owned()
 }
@@ -828,6 +904,7 @@ mod tests {
         OutboxConfig::default().validate().unwrap();
         ContextConfig::default().validate().unwrap();
         RagConfig::default().validate().unwrap();
+        ThumbnailConfig::default().validate().unwrap();
     }
 
     #[test]

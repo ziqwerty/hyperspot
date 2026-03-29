@@ -97,6 +97,7 @@ fn build_service(
         provider_resolver,
         mock_model_resolver(),
         rag_config,
+        crate::config::ThumbnailConfig::default(),
         Arc::new(crate::domain::ports::metrics::NoopMetrics),
     )
 }
@@ -144,6 +145,7 @@ fn build_service_with_metrics(
         provider_resolver,
         mock_model_resolver(),
         rag_config,
+        crate::config::ThumbnailConfig::default(),
         metrics,
     )
 }
@@ -2070,6 +2072,7 @@ fn build_service_azure(
         provider_resolver,
         azure_model_resolver(),
         rag_config,
+        crate::config::ThumbnailConfig::default(),
         Arc::new(crate::domain::ports::metrics::NoopMetrics),
     )
 }
@@ -2668,6 +2671,7 @@ async fn test_upload_limits_ccm_tighter_than_configmap() {
             provider_resolver,
             model_resolver,
             rag_config,
+            crate::config::ThumbnailConfig::default(),
             Arc::new(crate::domain::ports::metrics::NoopMetrics),
         );
 

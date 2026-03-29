@@ -41,6 +41,11 @@ pub struct SetUploadedParams {
 #[domain_model]
 pub struct SetReadyParams {
     pub id: Uuid,
+    /// Server-generated thumbnail bytes (WebP). `None` for documents or
+    /// when thumbnail generation failed/was skipped.
+    pub img_thumbnail: Option<Vec<u8>>,
+    pub img_thumbnail_width: Option<i32>,
+    pub img_thumbnail_height: Option<i32>,
 }
 
 /// Parameters for CAS transition `pending|uploaded → failed`.

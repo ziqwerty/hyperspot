@@ -114,15 +114,25 @@ impl crate::domain::repos::AttachmentRepository for AttachmentRepository {
         params: SetReadyParams,
     ) -> Result<u64, DomainError> {
         let now = OffsetDateTime::now_utc();
-        let result = Entity::update_many()
+        let mut query = Entity::update_many()
             .col_expr(Column::Status, Expr::value(AttachmentStatus::Ready))
             .col_expr(Column::UpdatedAt, Expr::value(now))
-            .filter(
-                Condition::all()
-                    .add(Column::Id.eq(params.id))
-                    .add(Column::Status.eq(AttachmentStatus::Uploaded))
-                    .add(Column::DeletedAt.is_null()),
+            .col_expr(Column::ImgThumbnail, Expr::value(params.img_thumbnail))
+            .col_expr(
+                Column::ImgThumbnailWidth,
+                Expr::value(params.img_thumbnail_width),
             )
+            .col_expr(
+                Column::ImgThumbnailHeight,
+                Expr::value(params.img_thumbnail_height),
+            );
+        query = query.filter(
+            Condition::all()
+                .add(Column::Id.eq(params.id))
+                .add(Column::Status.eq(AttachmentStatus::Uploaded))
+                .add(Column::DeletedAt.is_null()),
+        );
+        let result = query
             .secure()
             .scope_with(scope)
             .exec(runner)

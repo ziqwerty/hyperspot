@@ -8,7 +8,9 @@ use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
 use modkit_db::DBProvider;
 use modkit_macros::domain_model;
 
-use crate::config::{ContextConfig, EstimationBudgets, QuotaConfig, RagConfig, StreamingConfig};
+use crate::config::{
+    ContextConfig, EstimationBudgets, QuotaConfig, RagConfig, StreamingConfig, ThumbnailConfig,
+};
 use crate::domain::ports::MiniChatMetricsPort;
 use crate::domain::repos::{
     AttachmentRepository, ChatRepository, MessageAttachmentRepository, MessageRepository,
@@ -33,6 +35,7 @@ pub(crate) mod replay;
 mod stream_service;
 #[cfg(test)]
 pub(crate) mod test_helpers;
+pub(crate) mod thumbnail;
 pub(crate) mod token_estimator;
 mod turn_service;
 
@@ -198,6 +201,7 @@ impl<
         file_storage: Arc<dyn crate::domain::ports::FileStorageProvider>,
         vector_store_provider: Arc<dyn crate::domain::ports::VectorStoreProvider>,
         rag_config: RagConfig,
+        thumbnail_config: ThumbnailConfig,
         metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         let enforcer = PolicyEnforcer::new(authz);
@@ -288,6 +292,7 @@ impl<
                 Arc::clone(provider_resolver),
                 Arc::clone(model_resolver),
                 rag_config,
+                thumbnail_config,
                 Arc::clone(&metrics),
             ),
             models: ModelService::new(

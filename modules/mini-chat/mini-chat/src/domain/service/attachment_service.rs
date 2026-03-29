@@ -6,7 +6,7 @@ use modkit_macros::domain_model;
 use modkit_security::{AccessScope, SecurityContext};
 use uuid::Uuid;
 
-use crate::config::RagConfig;
+use crate::config::{RagConfig, ThumbnailConfig};
 use crate::domain::error::DomainError;
 use crate::domain::mime_validation::{AttachmentKind, AttachmentPurpose};
 use crate::domain::ports::MiniChatMetricsPort;
@@ -154,6 +154,7 @@ pub struct AttachmentService<
     provider_resolver: Arc<ProviderResolver>,
     model_resolver: Arc<dyn ModelResolver>,
     rag_config: RagConfig,
+    thumbnail_config: ThumbnailConfig,
     metrics: Arc<dyn MiniChatMetricsPort>,
 }
 
@@ -176,6 +177,7 @@ impl<
         provider_resolver: Arc<ProviderResolver>,
         model_resolver: Arc<dyn ModelResolver>,
         rag_config: RagConfig,
+        thumbnail_config: ThumbnailConfig,
         metrics: Arc<dyn MiniChatMetricsPort>,
     ) -> Self {
         Self {
@@ -190,6 +192,7 @@ impl<
             provider_resolver,
             model_resolver,
             rag_config,
+            thumbnail_config,
             metrics,
         }
     }
@@ -857,8 +860,43 @@ impl<
         };
         let pending_guard = PendingGuard::new(&self.metrics);
 
-        // 3. Upload stream to provider (outside TX — avoids holding pool)
+        // 3. Upload stream to provider (outside TX — avoids holding pool).
+        //    For images, buffer the raw bytes while streaming so we can
+        //    generate a thumbnail after the upload completes.
         let structured_name = structured_filename(chat_id, attachment_id, validated_mime);
+
+        // Arc<Mutex> is required because the stream closure must be Send + 'static;
+        // in practice the stream is consumed sequentially so contention never occurs.
+        let image_buffer: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(if is_document {
+                None
+            } else {
+                Some(Vec::new())
+            }));
+
+        let upload_stream: crate::domain::ports::FileStream = if is_document {
+            file_stream
+        } else {
+            let buf = std::sync::Arc::clone(&image_buffer);
+            let max_buf = self.thumbnail_config.max_decode_bytes;
+            Box::pin(futures::stream::StreamExt::map(file_stream, move |chunk| {
+                if let Ok(ref bytes) = chunk {
+                    let mut guard = buf
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Some(ref mut v) = *guard {
+                        // Stop buffering if we exceed decode limit — thumbnail
+                        // generation will be skipped, but upload continues.
+                        if v.len() + bytes.len() <= max_buf {
+                            v.extend_from_slice(bytes);
+                        } else {
+                            *guard = None;
+                        }
+                    }
+                }
+                chunk
+            }))
+        };
 
         let (provider_file_id, bytes_uploaded) = match self
             .file_storage
@@ -868,7 +906,7 @@ impl<
                 UploadFileParams {
                     filename: structured_name,
                     content_type: validated_mime.to_owned(),
-                    file_stream,
+                    file_stream: upload_stream,
                     purpose: "assistants".to_owned(),
                 },
             )
@@ -929,7 +967,7 @@ impl<
         // 5. Execute purpose-specific paths (each fires independently).
         // - FileSearch + document → vector store indexing
         // - CodeInterpreter → (no extra step during upload; file is used at stream time)
-        // - Images → (no extra step; sent inline)
+        // - Images → generate thumbnail (best-effort, sync)
         // When an attachment has multiple purposes, all matching paths execute.
         if is_document && purposes.contains(&AttachmentPurpose::FileSearch) {
             // Get or create vector store
@@ -977,13 +1015,59 @@ impl<
             }
         }
 
-        // 6. CAS: uploaded → ready
+        // 5b. Image thumbnail generation (best-effort, offloaded to blocking thread).
+        // Thumbnail failure never blocks the upload — the attachment transitions
+        // to `ready` with `img_thumbnail = null`.
+        let thumbnail = if is_document {
+            None
+        } else {
+            let raw_bytes = image_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            match raw_bytes {
+                Some(raw) => {
+                    let cfg = self.thumbnail_config.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        super::thumbnail::generate(&cfg, &raw)
+                    })
+                    .await
+                    {
+                        Ok(thumb) => thumb,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "thumbnail spawn_blocking failed");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            }
+        };
+
+        // 6. CAS: uploaded → ready (with thumbnail if available)
         {
             use crate::domain::repos::SetReadyParams;
+            let (thumb_bytes, thumb_w, thumb_h) = match thumbnail {
+                Some(t) => (
+                    Some(t.bytes),
+                    i32::try_from(t.width).ok(),
+                    i32::try_from(t.height).ok(),
+                ),
+                None => (None, None, None),
+            };
             let conn = self.db.conn().map_err(DomainError::from)?;
             let affected = self
                 .attachment_repo
-                .cas_set_ready(&conn, &scope, SetReadyParams { id: attachment_id })
+                .cas_set_ready(
+                    &conn,
+                    &scope,
+                    SetReadyParams {
+                        id: attachment_id,
+                        img_thumbnail: thumb_bytes,
+                        img_thumbnail_width: thumb_w,
+                        img_thumbnail_height: thumb_h,
+                    },
+                )
                 .await?;
             if affected == 0 {
                 // P1-14: Concurrent soft-delete — best-effort cleanup

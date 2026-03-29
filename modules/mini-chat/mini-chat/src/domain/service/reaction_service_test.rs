@@ -10,10 +10,11 @@ use crate::domain::repos::{
     InsertAssistantMessageParams, InsertUserMessageParams, MessageRepository as MessageRepoTrait,
 };
 use crate::domain::service::test_helpers::{
-    MockThreadSummaryRepo, inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver,
-    mock_tenant_only_enforcer, mock_thread_summary_repo, test_security_ctx,
+    MockThreadSummaryRepo, NoopOutboxEnqueuer, inmem_db, mock_db_provider, mock_enforcer,
+    mock_model_resolver, mock_tenant_only_enforcer, mock_thread_summary_repo, test_security_ctx,
     test_security_ctx_with_id,
 };
+use crate::infra::db::repo::attachment_repo::AttachmentRepository as OrmAttachmentRepository;
 use crate::infra::db::repo::chat_repo::ChatRepository as OrmChatRepository;
 use crate::infra::db::repo::message_repo::MessageRepository as OrmMessageRepository;
 use crate::infra::db::repo::reaction_repo::ReactionRepository as OrmReactionRepository;
@@ -33,11 +34,13 @@ fn limit_cfg() -> modkit_db::odata::LimitCfg {
 fn build_chat_service(
     db_provider: Arc<crate::domain::service::DbProvider>,
     chat_repo: Arc<OrmChatRepository>,
-) -> ChatService<OrmChatRepository, MockThreadSummaryRepo> {
+) -> ChatService<OrmChatRepository, OrmAttachmentRepository, MockThreadSummaryRepo> {
     ChatService::new(
         db_provider,
         chat_repo,
+        Arc::new(OrmAttachmentRepository),
         mock_thread_summary_repo(),
+        Arc::new(NoopOutboxEnqueuer),
         mock_enforcer(),
         mock_model_resolver(),
     )

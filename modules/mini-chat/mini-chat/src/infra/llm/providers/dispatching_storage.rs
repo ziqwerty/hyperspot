@@ -106,4 +106,15 @@ impl VectorStoreProvider for DispatchingVectorStore {
             .add_file_to_vector_store(ctx, provider_id, params)
             .await
     }
+
+    async fn delete_vector_store(
+        &self,
+        ctx: SecurityContext,
+        provider_id: &str,
+        vector_store_id: &str,
+    ) -> Result<(), FileStorageError> {
+        self.get(provider_id)?
+            .delete_vector_store(ctx, provider_id, vector_store_id)
+            .await
+    }
 }

@@ -139,19 +139,13 @@ pub struct MiniChatMetricsMeter {
     #[allow(dead_code)]
     context_truncation: Counter<u64>,
 
-    // ── P3: Cleanup job (deferred: cleanup job not implemented) ──
-    #[allow(dead_code)]
-    cleanup_job_runs: Counter<u64>,
-    #[allow(dead_code)]
-    cleanup_attempts: Counter<u64>,
-    #[allow(dead_code)]
-    cleanup_orphan_found: Counter<u64>,
-    #[allow(dead_code)]
-    cleanup_orphan_fixed: Counter<u64>,
-    #[allow(dead_code)]
+    // ── P1: Cleanup worker ──────────────────────────────────────────────
+    cleanup_completed: Counter<u64>,
+    cleanup_failed: Counter<u64>,
+    cleanup_retry: Counter<u64>,
+    #[allow(dead_code)] // gauge is recorded but not read back; the OTel SDK exports it
     cleanup_backlog: Gauge<i64>,
-    #[allow(dead_code)]
-    cleanup_latency_ms: Histogram<f64>,
+    cleanup_vs_with_failed_attachments: Counter<u64>,
 
     // ── P3: Summary (deferred: summary feature not implemented) ──
     #[allow(dead_code)]
@@ -479,30 +473,28 @@ impl MiniChatMetricsMeter {
                 .with_description("Context truncation events")
                 .build(),
 
-            // deferred: cleanup job not implemented
-            cleanup_job_runs: meter
-                .u64_counter(format!("{prefix}_cleanup_job_runs"))
-                .with_description("Cleanup job runs")
+            // ── P1: Cleanup worker ──────────────────────────────────────────
+            cleanup_completed: meter
+                .u64_counter(format!("{prefix}_cleanup_completed"))
+                .with_description("Successful provider cleanup operations")
                 .build(),
-            cleanup_attempts: meter
-                .u64_counter(format!("{prefix}_cleanup_attempts"))
-                .with_description("Cleanup attempts")
+            cleanup_failed: meter
+                .u64_counter(format!("{prefix}_cleanup_failed"))
+                .with_description("Attachment cleanup rows reaching terminal failed")
                 .build(),
-            cleanup_orphan_found: meter
-                .u64_counter(format!("{prefix}_cleanup_orphan_found"))
-                .with_description("Orphaned resources found during cleanup")
-                .build(),
-            cleanup_orphan_fixed: meter
-                .u64_counter(format!("{prefix}_cleanup_orphan_fixed"))
-                .with_description("Orphaned resources fixed during cleanup")
+            cleanup_retry: meter
+                .u64_counter(format!("{prefix}_cleanup_retry"))
+                .with_description("Cleanup retries delegated to shared outbox")
                 .build(),
             cleanup_backlog: meter
                 .i64_gauge(format!("{prefix}_cleanup_backlog"))
-                .with_description("Current cleanup backlog")
+                .with_description("Current cleanup backlog by state")
                 .build(),
-            cleanup_latency_ms: meter
-                .f64_histogram(format!("{prefix}_cleanup_latency_ms"))
-                .with_description("Cleanup operation latency (ms)")
+            cleanup_vs_with_failed_attachments: meter
+                .u64_counter(format!(
+                    "{prefix}_cleanup_vector_store_with_failed_attachments"
+                ))
+                .with_description("Vector store deletions with at least one failed attachment")
                 .build(),
 
             // deferred: summary feature not implemented
@@ -810,6 +802,46 @@ impl MiniChatMetricsPort for MiniChatMetricsMeter {
             u64::from(count),
             &[KeyValue::new(key::MODEL, model.to_owned())],
         );
+    }
+
+    // ── P1: Cleanup ──────────────────────────────────────────────────
+
+    fn record_cleanup_completed(&self, resource_type: &str) {
+        self.cleanup_completed.add(
+            1,
+            &[KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned())],
+        );
+    }
+
+    fn record_cleanup_failed(&self, resource_type: &str) {
+        self.cleanup_failed.add(
+            1,
+            &[KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned())],
+        );
+    }
+
+    fn record_cleanup_retry(&self, resource_type: &str, reason: &str) {
+        self.cleanup_retry.add(
+            1,
+            &[
+                KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned()),
+                KeyValue::new(key::REASON, reason.to_owned()),
+            ],
+        );
+    }
+
+    fn record_cleanup_backlog(&self, state: &str, resource_type: &str, count: i64) {
+        self.cleanup_backlog.record(
+            count,
+            &[
+                KeyValue::new(key::STATE, state.to_owned()),
+                KeyValue::new(key::RESOURCE_TYPE, resource_type.to_owned()),
+            ],
+        );
+    }
+
+    fn record_cleanup_vs_with_failed_attachments(&self) {
+        self.cleanup_vs_with_failed_attachments.add(1, &[]);
     }
 }
 

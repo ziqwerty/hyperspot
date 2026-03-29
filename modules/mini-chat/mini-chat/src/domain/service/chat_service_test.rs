@@ -9,17 +9,18 @@ use crate::infra::db::repo::chat_repo::ChatRepository as OrmChatRepository;
 
 use super::ChatService;
 use crate::domain::service::test_helpers::{
-    MockThreadSummaryRepo, inmem_db, mock_db_provider, mock_enforcer, mock_model_resolver,
-    mock_tenant_only_enforcer, mock_thread_summary_repo, test_security_ctx,
+    MockThreadSummaryRepo, NoopOutboxEnqueuer, inmem_db, mock_db_provider, mock_enforcer,
+    mock_model_resolver, mock_tenant_only_enforcer, mock_thread_summary_repo, test_security_ctx,
     test_security_ctx_with_id,
 };
+use crate::infra::db::repo::attachment_repo::AttachmentRepository as OrmAttachmentRepository;
 
 // ── Test Helpers ──
 
 fn build_service_with_enforcer(
     db: modkit_db::Db,
     enforcer: authz_resolver_sdk::PolicyEnforcer,
-) -> ChatService<OrmChatRepository, MockThreadSummaryRepo> {
+) -> ChatService<OrmChatRepository, OrmAttachmentRepository, MockThreadSummaryRepo> {
     let db = mock_db_provider(db);
     let chat_repo = Arc::new(OrmChatRepository::new(modkit_db::odata::LimitCfg {
         default: 20,
@@ -29,19 +30,23 @@ fn build_service_with_enforcer(
     ChatService::new(
         db,
         chat_repo,
+        Arc::new(OrmAttachmentRepository),
         mock_thread_summary_repo(),
+        Arc::new(NoopOutboxEnqueuer),
         enforcer,
         mock_model_resolver(),
     )
 }
 
-fn build_service(db: modkit_db::Db) -> ChatService<OrmChatRepository, MockThreadSummaryRepo> {
+fn build_service(
+    db: modkit_db::Db,
+) -> ChatService<OrmChatRepository, OrmAttachmentRepository, MockThreadSummaryRepo> {
     build_service_with_enforcer(db, mock_enforcer())
 }
 
 fn build_service_tenant_only_authz(
     db: modkit_db::Db,
-) -> ChatService<OrmChatRepository, MockThreadSummaryRepo> {
+) -> ChatService<OrmChatRepository, OrmAttachmentRepository, MockThreadSummaryRepo> {
     build_service_with_enforcer(db, mock_tenant_only_enforcer())
 }
 
@@ -584,7 +589,9 @@ async fn get_chat_message_count_reflects_inserted_messages() {
     let svc = ChatService::new(
         Arc::clone(&db_provider),
         Arc::clone(&chat_repo),
+        Arc::new(OrmAttachmentRepository),
         mock_thread_summary_repo(),
+        Arc::new(NoopOutboxEnqueuer),
         mock_enforcer(),
         mock_model_resolver(),
     );

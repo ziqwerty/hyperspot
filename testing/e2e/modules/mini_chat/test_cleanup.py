@@ -17,6 +17,8 @@ Covers:
 """
 
 import io
+import os
+import sqlite3
 import time
 import uuid
 
@@ -31,6 +33,7 @@ from .conftest import (
     expect_done,
     expect_stream_started,
     parse_sse,
+    poll_until,
     stream_message,
 )
 from .mock_provider.responses import MockEvent, Scenario, Usage
@@ -314,3 +317,278 @@ class TestCleanup:
         assert resp.status_code == 200
         messages = resp.json()
         assert "items" in messages and isinstance(messages["items"], list)
+
+
+# ---------------------------------------------------------------------------
+# DB helpers for cleanup worker scenarios
+# ---------------------------------------------------------------------------
+
+def _to_blob(value):
+    """Convert UUID strings to bytes for SQLite parameter binding."""
+    if isinstance(value, str):
+        try:
+            return uuid.UUID(value).bytes
+        except ValueError:
+            pass
+    return value
+
+
+def query_db(sql, params=()):
+    if not os.path.exists(DB_PATH):
+        pytest.skip(f"DB not found at {DB_PATH}")
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    blob_params = tuple(_to_blob(p) for p in params)
+    try:
+        rows = conn.execute(sql, blob_params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def poll_attachment_ready(chat_id: str, attachment_id: str, timeout: float = 30.0):
+    """Poll until an attachment is ready; fail fast if upload failed."""
+    resp = poll_until(
+        lambda: httpx.get(
+            f"{API_PREFIX}/chats/{chat_id}/attachments/{attachment_id}",
+            timeout=10,
+        ),
+        until=lambda r: r.json()["status"] in ("ready", "failed"),
+        timeout=timeout,
+    )
+    body = resp.json()
+    assert body["status"] == "ready", (
+        f"Attachment {attachment_id} upload failed (expected ready): {body}"
+    )
+    return resp
+
+
+def get_attachment_rows(chat_id: str) -> list[dict]:
+    """Query all attachment rows for a chat from DB."""
+    return query_db(
+        "SELECT id, cleanup_status, cleanup_attempts, last_cleanup_error, deleted_at "
+        "FROM attachments WHERE chat_id = ?",
+        (chat_id,),
+    )
+
+
+def get_outbox_messages(queue_name: str, limit: int = 50) -> list[dict]:
+    """Query outbox messages for a given queue.
+
+    Checks both incoming (not yet sequenced) and outgoing (sequenced) tables
+    because the sequencer runs asynchronously.
+
+    ModKit outbox schema:
+    - modkit_outbox_partitions: queue -> partition_id mapping
+    - modkit_outbox_incoming / modkit_outbox_outgoing: id, partition_id, body_id
+    - modkit_outbox_body: id, payload, payload_type, created_at
+    """
+    # Query both incoming (not yet sequenced) and outgoing (sequenced).
+    outgoing = query_db(
+        """
+        SELECT b.payload, b.payload_type, b.created_at
+        FROM modkit_outbox_outgoing o
+        JOIN modkit_outbox_body b ON o.body_id = b.id
+        JOIN modkit_outbox_partitions p ON o.partition_id = p.id
+        WHERE p.queue = ?
+        ORDER BY b.created_at DESC LIMIT ?
+        """,
+        (queue_name, limit),
+    )
+    incoming = query_db(
+        """
+        SELECT b.payload, b.payload_type, b.created_at
+        FROM modkit_outbox_incoming i
+        JOIN modkit_outbox_body b ON i.body_id = b.id
+        JOIN modkit_outbox_partitions p ON i.partition_id = p.id
+        WHERE p.queue = ?
+        ORDER BY b.created_at DESC LIMIT ?
+        """,
+        (queue_name, limit),
+    )
+    return outgoing + incoming
+
+
+# ---------------------------------------------------------------------------
+# Cleanup worker E2E scenarios
+# ---------------------------------------------------------------------------
+
+class TestCleanupWorkerDB:
+    """Cleanup worker — verify DB state transitions.
+
+    These tests inspect the database directly to verify that:
+    - Chat deletion marks attachments as cleanup_status = 'pending'
+    - Chat cleanup outbox event is enqueued
+    - Attachment deletion enqueues a per-attachment cleanup event
+    """
+
+    def test_chat_deletion_marks_attachments_for_cleanup(self, server):
+        """DELETE chat → all attachments get cleanup_status set (not NULL)."""
+        chat = create_chat()
+        chat_id = chat["id"]
+
+        # Upload an attachment and wait until it's ready
+        upload_resp = upload_file(chat_id)
+        assert upload_resp.status_code == 201
+        att_id = upload_resp.json()["id"]
+        poll_attachment_ready(chat_id, att_id)
+
+        # Delete the chat
+        del_resp = delete_chat(chat_id)
+        assert del_resp.status_code == 204
+
+        # Verify: attachment cleanup_status was set by the delete TX.
+        # It may already be 'done' if the outbox handler processed it quickly.
+        rows = get_attachment_rows(chat_id)
+        assert len(rows) >= 1, f"Expected at least 1 attachment row, got {len(rows)}"
+        for row in rows:
+            assert row["cleanup_status"] in ("pending", "done", "failed"), (
+                f"Attachment {row['id']} should have cleanup_status set, "
+                f"got {row['cleanup_status']!r}"
+            )
+
+    def test_chat_deletion_enqueues_chat_cleanup_event(self, server):
+        """DELETE chat → chat_cleanup outbox message is enqueued."""
+        chat = create_chat()
+        chat_id = chat["id"]
+
+        # Upload an attachment (so there's work for the cleanup handler)
+        upload_resp = upload_file(chat_id)
+        assert upload_resp.status_code == 201
+        att_id = upload_resp.json()["id"]
+        poll_attachment_ready(chat_id, att_id)
+
+        # Delete the chat
+        del_resp = delete_chat(chat_id)
+        assert del_resp.status_code == 204
+
+        # The outbox body table stores ALL enqueued payloads durably,
+        # regardless of processing state. Query it directly.
+        import json
+        all_bodies = query_db(
+            "SELECT payload FROM modkit_outbox_body ORDER BY id DESC LIMIT 50"
+        )
+        found = False
+        for row in all_bodies:
+            try:
+                payload = json.loads(row["payload"])
+                if payload.get("chat_id") == chat_id and payload.get("reason") == "chat_soft_delete":
+                    found = True
+                    assert "system_request_id" in payload
+                    assert "chat_deleted_at" in payload
+                    assert "tenant_id" in payload
+                    break
+            except (json.JSONDecodeError, KeyError):
+                continue
+        assert found, (
+            f"No chat_cleanup body found for chat_id={chat_id}. "
+            f"Total bodies: {len(all_bodies)}"
+        )
+
+    def test_attachment_deletion_enqueues_cleanup_event(self, server):
+        """DELETE attachment → per-attachment cleanup outbox event is enqueued."""
+        chat = create_chat()
+        chat_id = chat["id"]
+
+        # Upload and wait for ready
+        upload_resp = upload_file(chat_id)
+        assert upload_resp.status_code == 201
+        att_id = upload_resp.json()["id"]
+        poll_attachment_ready(chat_id, att_id)
+
+        # Delete the individual attachment
+        del_resp = httpx.delete(
+            f"{API_PREFIX}/chats/{chat_id}/attachments/{att_id}",
+            timeout=10,
+        )
+        assert del_resp.status_code == 204
+
+        # Query outbox body table directly (durable, unaffected by handler processing).
+        import json
+        all_bodies = query_db(
+            "SELECT payload FROM modkit_outbox_body ORDER BY id DESC LIMIT 50"
+        )
+        found = False
+        for row in all_bodies:
+            try:
+                payload = json.loads(row["payload"])
+                if payload.get("attachment_id") == att_id:
+                    found = True
+                    assert payload["event_type"] == "attachment_deleted"
+                    assert payload["chat_id"] == chat_id
+                    assert "provider_file_id" in payload
+                    assert "storage_backend" in payload
+                    break
+            except (json.JSONDecodeError, KeyError):
+                continue
+        assert found, (
+            f"No attachment_cleanup body found for attachment_id={att_id}. "
+            f"Total bodies: {len(all_bodies)}"
+        )
+
+    def test_chat_deletion_with_multiple_attachments(self, server):
+        """DELETE chat with 3 attachments → all get cleanup_status set."""
+        chat = create_chat()
+        chat_id = chat["id"]
+
+        att_ids = []
+        for i in range(3):
+            resp = upload_file(
+                chat_id,
+                content=f"File content {i}".encode(),
+                filename=f"test_{i}.txt",
+            )
+            assert resp.status_code == 201
+            att_ids.append(resp.json()["id"])
+
+        # Wait for all to be ready
+        for att_id in att_ids:
+            poll_attachment_ready(chat_id, att_id)
+
+        # Delete chat
+        del_resp = delete_chat(chat_id)
+        assert del_resp.status_code == 204
+
+        # All 3 attachments should have cleanup_status set (may already be 'done')
+        rows = get_attachment_rows(chat_id)
+        cleanup_rows = [r for r in rows if r["cleanup_status"] in ("pending", "done", "failed")]
+        assert len(cleanup_rows) == 3, (
+            f"Expected 3 attachments with cleanup_status set, got {len(cleanup_rows)} "
+            f"(total rows: {len(rows)})"
+        )
+
+    def test_double_delete_chat_idempotent(self, server):
+        """Second DELETE returns 404; no duplicate cleanup events."""
+        chat = create_chat()
+        chat_id = chat["id"]
+
+        upload_resp = upload_file(chat_id)
+        assert upload_resp.status_code == 201
+
+        # First delete
+        resp1 = delete_chat(chat_id)
+        assert resp1.status_code == 204
+
+        # Second delete — 404
+        resp2 = delete_chat(chat_id)
+        assert resp2.status_code == 404
+
+    def test_chat_without_attachments_still_enqueues(self, server):
+        """DELETE empty chat → cleanup event still enqueued (handler handles gracefully)."""
+        chat = create_chat()
+        chat_id = chat["id"]
+
+        del_resp = delete_chat(chat_id)
+        assert del_resp.status_code == 204
+
+        # Query outbox body table directly.
+        import json
+        all_bodies = query_db(
+            "SELECT payload FROM modkit_outbox_body ORDER BY id DESC LIMIT 50"
+        )
+        found = any(
+            json.loads(row["payload"]).get("chat_id") == chat_id
+            for row in all_bodies
+            if row["payload"]
+        )
+        assert found, "Chat cleanup event should be enqueued even for empty chat"

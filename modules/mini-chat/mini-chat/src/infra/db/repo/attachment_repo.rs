@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use modkit_db::secure::{DBRunner, SecureEntityExt, SecureUpdateExt, secure_insert};
 use modkit_security::AccessScope;
+use sea_orm::sea_query::ExprTrait;
 use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{
     ColumnTrait, Condition, EntityTrait, FromQueryResult, QueryFilter, QuerySelect, Set,
@@ -16,7 +17,8 @@ use crate::domain::repos::{
     InsertAttachmentParams, SetFailedParams, SetReadyParams, SetUploadedParams,
 };
 use crate::infra::db::entity::attachment::{
-    ActiveModel, AttachmentKind, AttachmentStatus, Column, Entity, Model as AttachmentModel,
+    ActiveModel, AttachmentKind, AttachmentStatus, CleanupStatus, Column, Entity,
+    Model as AttachmentModel,
 };
 
 fn db_err(e: impl std::fmt::Display) -> DomainError {
@@ -396,5 +398,174 @@ impl crate::domain::repos::AttachmentRepository for AttachmentRepository {
             .into_iter()
             .filter_map(|r| r.provider_file_id)
             .collect())
+    }
+
+    // ── Cleanup methods (no user session — background workers) ─────────
+    //
+    // These use `AccessScope::allow_all()` because background workers have
+    // no user context. Safety: the outbox message was enqueued inside a
+    // scoped transaction, so the chat_id is already authorized.
+
+    async fn find_pending_cleanup_by_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<Vec<AttachmentModel>, DomainError> {
+        let scope = AccessScope::allow_all();
+        // No deleted_at filter: in the chat-deletion path, individual attachments
+        // are NOT soft-deleted — only their cleanup_status is set to 'pending'.
+        let rows = Entity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::CleanupStatus.eq(CleanupStatus::Pending)),
+            )
+            .secure()
+            .scope_with(&scope)
+            .all(runner)
+            .await
+            .map_err(db_err)?;
+        Ok(rows)
+    }
+
+    async fn mark_cleanup_done<C: DBRunner>(
+        &self,
+        runner: &C,
+        attachment_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        let scope = AccessScope::allow_all();
+        let now = OffsetDateTime::now_utc();
+        let result = Entity::update_many()
+            .col_expr(
+                Column::CleanupStatus,
+                Expr::value(Some(CleanupStatus::Done)),
+            )
+            .col_expr(Column::CleanupUpdatedAt, Expr::value(Some(now)))
+            .filter(
+                Condition::all()
+                    .add(Column::Id.eq(attachment_id))
+                    .add(Column::CleanupStatus.eq(CleanupStatus::Pending)),
+            )
+            .secure()
+            .scope_with(&scope)
+            .exec(runner)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected)
+    }
+
+    async fn record_cleanup_attempt<C: DBRunner>(
+        &self,
+        runner: &C,
+        attachment_id: Uuid,
+        error: &str,
+        max_attempts: u32,
+    ) -> Result<crate::domain::repos::CleanupOutcome, DomainError> {
+        use crate::domain::repos::CleanupOutcome;
+
+        let scope = AccessScope::allow_all();
+        let now = OffsetDateTime::now_utc();
+
+        // Atomic increment + conditional status transition in a single UPDATE.
+        // CASE WHEN cleanup_attempts + 1 >= max THEN 'failed' ELSE 'pending' END
+        // CAS guard: cleanup_status = 'pending' (skip if already terminal).
+        #[allow(clippy::cast_possible_wrap)]
+        let max_i32 = max_attempts as i32;
+
+        let new_status_expr: sea_orm::sea_query::SimpleExpr = Expr::case(
+            Expr::col(Column::CleanupAttempts)
+                .add(Expr::val(1i32))
+                .gte(Expr::val(max_i32)),
+            Expr::val(Some(CleanupStatus::Failed)),
+        )
+        .finally(Expr::val(Some(CleanupStatus::Pending)))
+        .into();
+
+        let result = Entity::update_many()
+            .col_expr(Column::CleanupStatus, new_status_expr)
+            .col_expr(
+                Column::CleanupAttempts,
+                Expr::col(Column::CleanupAttempts).add(Expr::val(1i32)),
+            )
+            .col_expr(
+                Column::LastCleanupError,
+                Expr::value(Some(error.to_owned())),
+            )
+            .col_expr(Column::CleanupUpdatedAt, Expr::value(Some(now)))
+            .filter(
+                Condition::all()
+                    .add(Column::Id.eq(attachment_id))
+                    .add(Column::CleanupStatus.eq(CleanupStatus::Pending)),
+            )
+            .secure()
+            .scope_with(&scope)
+            .exec(runner)
+            .await
+            .map_err(db_err)?;
+
+        if result.rows_affected == 0 {
+            // Already terminal (done/failed) or not found -- stale redelivery.
+            return Ok(CleanupOutcome::AlreadyTerminal);
+        }
+
+        // Read back to determine whether we hit 'failed' or stayed 'pending'.
+        let row = Entity::find_by_id(attachment_id)
+            .secure()
+            .scope_with(&scope)
+            .one(runner)
+            .await
+            .map_err(db_err)?;
+
+        match row.and_then(|r| r.cleanup_status) {
+            Some(CleanupStatus::Failed) => Ok(CleanupOutcome::TerminalFailure),
+            _ => Ok(CleanupOutcome::StillPending),
+        }
+    }
+
+    async fn mark_attachments_pending_for_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        let scope = AccessScope::allow_all();
+        let now = OffsetDateTime::now_utc();
+        let result = Entity::update_many()
+            .col_expr(
+                Column::CleanupStatus,
+                Expr::value(Some(CleanupStatus::Pending)),
+            )
+            .col_expr(Column::CleanupUpdatedAt, Expr::value(Some(now)))
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::CleanupStatus.is_null())
+                    .add(Column::DeletedAt.is_null()),
+            )
+            .secure()
+            .scope_with(&scope)
+            .exec(runner)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected)
+    }
+
+    async fn count_failed_cleanup_by_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<u64, DomainError> {
+        let scope = AccessScope::allow_all();
+        let count = Entity::find()
+            .filter(
+                Condition::all()
+                    .add(Column::ChatId.eq(chat_id))
+                    .add(Column::CleanupStatus.eq(CleanupStatus::Failed)),
+            )
+            .secure()
+            .scope_with(&scope)
+            .count(runner)
+            .await
+            .map_err(db_err)?;
+        Ok(count)
     }
 }

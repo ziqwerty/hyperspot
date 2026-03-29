@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use crate::domain::error::DomainError;
 use crate::domain::model::audit_envelope::AuditEnvelope;
 use crate::domain::ports::{MiniChatMetricsPort, metric_labels};
-use crate::domain::repos::{AttachmentCleanupEvent, OutboxEnqueuer};
+use crate::domain::repos::{AttachmentCleanupEvent, ChatCleanupEvent, OutboxEnqueuer};
 use crate::infra::audit_gateway::AuditGateway;
 
 const AUDIT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -20,10 +20,17 @@ const AUDIT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Serializes events to JSON and inserts into the outbox table
 /// within the caller's transaction via `modkit_db::outbox::Outbox::enqueue()`.
+///
+/// The `Outbox` handle is set lazily via [`set_outbox`] — this allows the
+/// enqueuer to be constructed in `init()` (where services need it) while the
+/// outbox pipeline starts later in `start()` (after OAGW registration).
+/// Enqueue is never called before `start()` because HTTP traffic doesn't arrive
+/// until after all modules have started.
 pub struct InfraOutboxEnqueuer {
-    outbox: Arc<Outbox>,
+    outbox: std::sync::OnceLock<Arc<Outbox>>,
     usage_queue_name: String,
     cleanup_queue_name: String,
+    chat_cleanup_queue_name: String,
     #[allow(dead_code)]
     thread_summary_queue_name: String,
     audit_queue_name: String,
@@ -32,21 +39,38 @@ pub struct InfraOutboxEnqueuer {
 
 impl InfraOutboxEnqueuer {
     pub(crate) fn new(
-        outbox: Arc<Outbox>,
         usage_queue_name: String,
         cleanup_queue_name: String,
+        chat_cleanup_queue_name: String,
         thread_summary_queue_name: String,
         audit_queue_name: String,
         num_partitions: u32,
     ) -> Self {
         Self {
-            outbox,
+            outbox: std::sync::OnceLock::new(),
             usage_queue_name,
             cleanup_queue_name,
+            chat_cleanup_queue_name,
             thread_summary_queue_name,
             audit_queue_name,
             num_partitions,
         }
+    }
+
+    /// Set the outbox handle after the pipeline starts in `start()`.
+    /// Panics if called more than once.
+    pub(crate) fn set_outbox(&self, outbox: Arc<Outbox>) {
+        assert!(
+            self.outbox.set(outbox).is_ok(),
+            "InfraOutboxEnqueuer::set_outbox called twice"
+        );
+    }
+
+    fn outbox(&self) -> &Outbox {
+        #[allow(clippy::expect_used)]
+        self.outbox
+            .get()
+            .expect("outbox not set -- enqueue called before start()")
     }
 
     fn partition_for(&self, tenant_id: uuid::Uuid) -> u32 {
@@ -74,7 +98,7 @@ impl InfraOutboxEnqueuer {
     ) -> Result<(), DomainError> {
         let partition = Self::compute_partition(chat_id, self.num_partitions);
 
-        self.outbox
+        self.outbox()
             .enqueue(
                 runner,
                 &self.thread_summary_queue_name,
@@ -107,7 +131,7 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         let payload = serde_json::to_vec(&event)
             .map_err(|e| DomainError::internal(format!("serialize UsageEvent: {e}")))?;
 
-        self.outbox
+        self.outbox()
             .enqueue(
                 runner,
                 &self.usage_queue_name,
@@ -138,7 +162,7 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         let payload = serde_json::to_vec(&event)
             .map_err(|e| DomainError::internal(format!("serialize AttachmentCleanupEvent: {e}")))?;
 
-        self.outbox
+        self.outbox()
             .enqueue(
                 runner,
                 &self.cleanup_queue_name,
@@ -160,6 +184,39 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         Ok(())
     }
 
+    async fn enqueue_chat_cleanup(
+        &self,
+        runner: &(dyn modkit_db::secure::DBRunner + Sync),
+        event: ChatCleanupEvent,
+    ) -> Result<(), DomainError> {
+        // Partition by chat_id so all cleanup messages for the same chat
+        // are serialized within one partition.
+        let partition = Self::compute_partition(event.chat_id, self.num_partitions);
+        let payload = serde_json::to_vec(&event)
+            .map_err(|e| DomainError::internal(format!("serialize ChatCleanupEvent: {e}")))?;
+
+        self.outbox()
+            .enqueue(
+                runner,
+                &self.chat_cleanup_queue_name,
+                partition,
+                payload,
+                "application/json",
+            )
+            .await
+            .map_err(|e| DomainError::internal(format!("outbox enqueue: {e}")))?;
+
+        info!(
+            queue = %self.chat_cleanup_queue_name,
+            partition,
+            chat_id = %event.chat_id,
+            system_request_id = %event.system_request_id,
+            "chat cleanup event enqueued"
+        );
+
+        Ok(())
+    }
+
     async fn enqueue_audit_event(
         &self,
         runner: &(dyn modkit_db::secure::DBRunner + Sync),
@@ -174,7 +231,7 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
         let payload = serde_json::to_vec(&event)
             .map_err(|e| DomainError::internal(format!("serialize AuditEnvelope: {e}")))?;
 
-        self.outbox
+        self.outbox()
             .enqueue(
                 runner,
                 &self.audit_queue_name,
@@ -196,7 +253,10 @@ impl OutboxEnqueuer for InfraOutboxEnqueuer {
     }
 
     fn flush(&self) {
-        self.outbox.flush();
+        // flush is a no-op if outbox isn't set yet (before start).
+        if let Some(outbox) = self.outbox.get() {
+            outbox.flush();
+        }
     }
 }
 
@@ -1063,15 +1123,15 @@ mod tests {
             .await
             .expect("outbox start");
 
-        let outbox = Arc::clone(handle.outbox());
         let enqueuer = InfraOutboxEnqueuer::new(
-            outbox,
             "test.usage".to_owned(),
             "test.cleanup".to_owned(),
+            "test.chat_cleanup".to_owned(),
             "test.thread_summary".to_owned(),
             "test.audit".to_owned(),
             1u32,
         );
+        enqueuer.set_outbox(Arc::clone(handle.outbox()));
 
         let payload = make_audit_envelope_payload();
         let envelope: AuditEnvelope = serde_json::from_slice(&payload).unwrap();
@@ -1133,17 +1193,16 @@ mod tests {
             .await
             .expect("outbox start");
 
-        let outbox = Arc::clone(handle.outbox());
-
         // Enqueue a usage event using InfraOutboxEnqueuer.
         let enqueuer = InfraOutboxEnqueuer::new(
-            outbox,
             "test.usage".to_owned(),
             "test.cleanup".to_owned(),
+            "test.chat_cleanup".to_owned(),
             "test.thread_summary".to_owned(),
             "test.audit".to_owned(),
             1u32,
         );
+        enqueuer.set_outbox(Arc::clone(handle.outbox()));
         let event = make_usage_event();
         let conn = db.conn().expect("conn");
         enqueuer

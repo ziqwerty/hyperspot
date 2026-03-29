@@ -618,6 +618,14 @@ mod tests {
             Ok(())
         }
 
+        async fn enqueue_chat_cleanup(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _event: crate::domain::repos::ChatCleanupEvent,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
         async fn enqueue_audit_event(
             &self,
             _runner: &(dyn modkit_db::secure::DBRunner + Sync),

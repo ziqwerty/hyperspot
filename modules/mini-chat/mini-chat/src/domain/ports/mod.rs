@@ -137,4 +137,12 @@ pub trait VectorStoreProvider: Send + Sync {
         provider_id: &str,
         params: AddFileToVectorStoreParams,
     ) -> Result<(), FileStorageError>;
+
+    /// Delete a vector store from the provider. Best-effort — 404 = success.
+    async fn delete_vector_store(
+        &self,
+        ctx: SecurityContext,
+        provider_id: &str,
+        vector_store_id: &str,
+    ) -> Result<(), FileStorageError>;
 }

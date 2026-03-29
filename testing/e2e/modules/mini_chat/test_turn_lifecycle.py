@@ -49,30 +49,29 @@ class TestTurnLifecycle:
         chat_id = chat["id"]
         request_id = str(uuid.uuid4())
 
-        # Very slow scenario — large delay so we can disconnect before content arrives
+        # Very slow scenario — 5s between events guarantees disconnect arrives
+        # before any content delta. Only 3 events to keep total duration short.
         many_deltas = [
             MockEvent("response.output_text.delta", {"delta": f"chunk{i} "})
-            for i in range(20)
+            for i in range(3)
         ]
         many_deltas.append(
             MockEvent("response.output_text.done", {"text": "done"})
         )
-        mock_provider.set_next_scenario(Scenario(slow=2.0, events=many_deltas))
+        mock_provider.set_next_scenario(Scenario(slow=5.0, events=many_deltas))
 
         url = f"{API_PREFIX}/chats/{chat_id}/messages:stream"
         body = {"content": "Write slowly.", "request_id": request_id}
 
-        # Start stream and disconnect immediately — read only the first chunk
-        # (likely just the stream_started event, before any content deltas)
+        # Open the SSE connection, then disconnect without reading any content.
+        # The 5s delay ensures the mock provider hasn't sent any delta yet.
         with httpx.stream(
             "POST", url, json=body,
             headers={"Accept": "text/event-stream"},
             timeout=30,
         ) as resp:
             assert resp.status_code == 200
-            # Read just enough to confirm the connection, then disconnect
-            for _ in resp.iter_bytes(chunk_size=128):
-                break
+            # Don't read anything — disconnect immediately
 
         # Poll until terminal
         turn = poll_turn_terminal(chat_id, request_id)

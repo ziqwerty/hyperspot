@@ -153,7 +153,7 @@ pub(crate) struct AppServices<
     VSR: VectorStoreRepository + 'static,
     MAR: MessageAttachmentRepository + 'static,
 > {
-    pub(crate) chats: ChatService<CR, TSR>,
+    pub(crate) chats: ChatService<CR, AR, TSR>,
     pub(crate) messages: MessageService<MR, CR, RR>,
     pub(crate) stream: StreamService<TR, MR, QR, CR, TSR, AR, VSR, MAR>,
     pub(crate) turns: TurnService<TR, MR, CR, MAR>,
@@ -237,7 +237,9 @@ impl<
             chats: ChatService::new(
                 Arc::clone(&db),
                 Arc::clone(&repos.chat),
+                Arc::clone(&repos.attachment),
                 Arc::clone(&repos.thread_summary),
+                Arc::clone(outbox_enqueuer),
                 enforcer.clone(),
                 Arc::clone(model_resolver),
             ),

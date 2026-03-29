@@ -2549,6 +2549,14 @@ mod tests {
             Ok(())
         }
 
+        async fn enqueue_chat_cleanup(
+            &self,
+            _runner: &(dyn modkit_db::secure::DBRunner + Sync),
+            _event: crate::domain::repos::ChatCleanupEvent,
+        ) -> Result<(), crate::domain::error::DomainError> {
+            Ok(())
+        }
+
         async fn enqueue_audit_event(
             &self,
             _runner: &(dyn modkit_db::secure::DBRunner + Sync),
@@ -6355,6 +6363,11 @@ mod tests {
         fn decrement_attachments_pending(&self) {}
         fn record_image_inputs_per_turn(&self, _: u32) {}
         fn record_code_interpreter_calls(&self, _: &str, _: u32) {}
+        fn record_cleanup_completed(&self, _: &str) {}
+        fn record_cleanup_failed(&self, _: &str) {}
+        fn record_cleanup_retry(&self, _: &str, _: &str) {}
+        fn record_cleanup_backlog(&self, _: &str, _: &str, _: i64) {}
+        fn record_cleanup_vs_with_failed_attachments(&self) {}
     }
 
     // ── Metric emission tests ────────────────────────────────────────────

@@ -1,7 +1,7 @@
 use mini_chat_sdk::UsageEvent;
 use modkit_db::secure::DBRunner;
 use modkit_macros::domain_model;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -24,6 +24,45 @@ pub struct AttachmentCleanupEvent {
     pub storage_backend: String,
     pub attachment_kind: String,
     pub deleted_at: OffsetDateTime,
+}
+
+/// Why provider cleanup was triggered.
+#[domain_model]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupReason {
+    /// Chat was explicitly soft-deleted by the user.
+    ChatSoftDelete,
+}
+
+/// Outcome after recording a cleanup attempt (returned by `record_cleanup_attempt`).
+#[domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupOutcome {
+    /// Attachment remains `pending` — retry later.
+    StillPending,
+    /// Max attempts reached — attachment transitioned to terminal `failed`.
+    TerminalFailure,
+    /// Attachment was already in a terminal state (`done` or `failed`) — stale
+    /// redelivery or concurrent worker already handled it. Not a real failure.
+    AlreadyTerminal,
+}
+
+/// Payload for chat-level cleanup outbox events.
+///
+/// Enqueued atomically with the chat soft-delete. The handler iterates
+/// pending attachments, deletes provider files, then deletes the vector store.
+/// Per DESIGN.md (line 1758) the payload MUST contain at minimum:
+/// `tenant_id`, `chat_id`, `system_request_id`, `reason`, `chat_deleted_at`.
+#[domain_model]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCleanupEvent {
+    pub reason: CleanupReason,
+    pub tenant_id: Uuid,
+    pub chat_id: Uuid,
+    pub system_request_id: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub chat_deleted_at: OffsetDateTime,
 }
 
 /// Domain-layer abstraction for enqueuing outbox events within a transaction.
@@ -75,6 +114,17 @@ pub trait OutboxEnqueuer: Send + Sync {
         &self,
         runner: &(dyn DBRunner + Sync),
         event: AttachmentCleanupEvent,
+    ) -> Result<(), DomainError>;
+
+    /// Enqueue a chat-deletion cleanup event within the caller's transaction.
+    ///
+    /// Called during the delete-chat transaction to schedule async cleanup
+    /// of all provider-side resources (files + vector store) for the soft-deleted chat.
+    /// Partitioned by `chat_id` so all cleanup for one chat is serialized.
+    async fn enqueue_chat_cleanup(
+        &self,
+        runner: &(dyn DBRunner + Sync),
+        event: ChatCleanupEvent,
     ) -> Result<(), DomainError>;
 
     /// Enqueue an audit event within the caller's transaction.

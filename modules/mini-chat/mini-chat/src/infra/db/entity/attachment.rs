@@ -31,7 +31,7 @@ pub struct Model {
     #[sea_orm(column_type = "String(StringLen::N(1024))", nullable)]
     pub summary_model: Option<String>,
     pub summary_updated_at: Option<OffsetDateTime>,
-    pub cleanup_status: Option<String>,
+    pub cleanup_status: Option<CleanupStatus>,
     pub cleanup_attempts: i32,
     #[sea_orm(column_type = "Text")]
     pub last_cleanup_error: Option<String>,
@@ -79,6 +79,19 @@ impl AttachmentStatus {
     pub fn is_transient(&self) -> bool {
         !self.is_terminal()
     }
+}
+
+/// Cleanup state machine: NULL → pending → done | failed.
+/// CAS guards enforce valid transitions.
+#[derive(Clone, Debug, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::N(16))")]
+pub enum CleanupStatus {
+    #[sea_orm(string_value = "pending")]
+    Pending,
+    #[sea_orm(string_value = "done")]
+    Done,
+    #[sea_orm(string_value = "failed")]
+    Failed,
 }
 
 /// Classification of attachment content.

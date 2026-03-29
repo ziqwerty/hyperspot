@@ -18,6 +18,9 @@ pub mod key {
     pub const TRIGGER: &str = "trigger";
     pub const KIND: &str = "kind";
     pub const TIER: &str = "tier";
+    pub const RESOURCE_TYPE: &str = "resource_type";
+    #[allow(dead_code)] // declared ahead of call site (metrics infra uses string literals)
+    pub const STATE: &str = "state";
 }
 
 // ── Label values ─────────────────────────────────────────────────────────
@@ -76,6 +79,20 @@ pub mod upload_result {
     #[allow(dead_code)] // declared ahead of call site (deferred metrics)
     pub const UNSUPPORTED_TYPE: &str = "unsupported_type";
     pub const PROVIDER_ERROR: &str = "provider_error";
+}
+
+/// Cleanup resource type labels (`resource_type` label).
+pub mod resource_type {
+    pub const FILE: &str = "file";
+    pub const VECTOR_STORE: &str = "vector_store";
+}
+
+/// Cleanup backlog state labels (`state` label).
+pub mod cleanup_state {
+    #[allow(dead_code)] // declared ahead of call site (metrics infra uses string literals)
+    pub const PENDING: &str = "pending";
+    #[allow(dead_code)] // declared ahead of call site (metrics infra uses string literals)
+    pub const FAILED: &str = "failed";
 }
 
 /// Cancel / abort trigger labels (`trigger` label).

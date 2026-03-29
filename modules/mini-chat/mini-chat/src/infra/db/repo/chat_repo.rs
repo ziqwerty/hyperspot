@@ -231,6 +231,28 @@ impl crate::domain::repos::ChatRepository for ChatRepository {
         }
         Ok(counts)
     }
+
+    // ── System-scoped methods (background workers) ──────────────────────
+
+    async fn is_deleted_system<C: DBRunner>(
+        &self,
+        conn: &C,
+        chat_id: Uuid,
+    ) -> Result<bool, DomainError> {
+        let scope = AccessScope::allow_all();
+        let found = Entity::find()
+            .filter(
+                sea_orm::Condition::all()
+                    .add(Expr::col(Column::Id).eq(chat_id))
+                    .add(Expr::col(Column::DeletedAt).is_not_null()),
+            )
+            .secure()
+            .scope_with(&scope)
+            .one(conn)
+            .await
+            .map_err(db_err)?;
+        Ok(found.is_some())
+    }
 }
 
 #[derive(Debug, FromQueryResult)]

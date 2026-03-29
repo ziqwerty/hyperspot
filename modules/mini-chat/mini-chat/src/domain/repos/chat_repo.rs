@@ -81,4 +81,14 @@ pub trait ChatRepository: Send + Sync {
         scope: &AccessScope,
         chat_ids: &[Uuid],
     ) -> Result<HashMap<Uuid, i64>, DomainError>;
+
+    // ── System-scoped methods (background workers) ──────────────────────
+
+    /// Check whether a chat has been soft-deleted (system context, no access scope).
+    /// Returns `true` if `deleted_at IS NOT NULL`.
+    async fn is_deleted_system<C: DBRunner>(
+        &self,
+        conn: &C,
+        chat_id: Uuid,
+    ) -> Result<bool, DomainError>;
 }

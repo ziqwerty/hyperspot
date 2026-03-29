@@ -77,4 +77,18 @@ impl VectorStoreProvider for OpenAiVectorStore {
         });
         self.client.json_post_no_response(ctx, &uri, &body).await
     }
+
+    async fn delete_vector_store(
+        &self,
+        ctx: SecurityContext,
+        provider_id: &str,
+        vector_store_id: &str,
+    ) -> Result<(), FileStorageError> {
+        let uri = self.resolve_uri(
+            &ctx,
+            provider_id,
+            &format!("vector_stores/{vector_store_id}"),
+        )?;
+        self.client.delete(ctx, &uri).await
+    }
 }

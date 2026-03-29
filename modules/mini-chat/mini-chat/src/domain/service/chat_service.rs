@@ -11,33 +11,47 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::repos::{ChatRepository, ModelResolver, ThreadSummaryRepository};
+use crate::domain::repos::{
+    AttachmentRepository, ChatRepository, CleanupReason, ModelResolver, OutboxEnqueuer,
+    ThreadSummaryRepository,
+};
 
 use super::{DbProvider, actions, resources};
 
 /// Service handling chat CRUD operations.
 #[domain_model]
-pub struct ChatService<CR: ChatRepository, TSR: ThreadSummaryRepository> {
+pub struct ChatService<CR: ChatRepository, AR: AttachmentRepository, TSR: ThreadSummaryRepository> {
     db: Arc<DbProvider>,
     chat_repo: Arc<CR>,
+    attachment_repo: Arc<AR>,
     #[allow(dead_code)]
     thread_summary_repo: Arc<TSR>,
+    outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
     enforcer: PolicyEnforcer,
     model_resolver: Arc<dyn ModelResolver>,
 }
 
-impl<CR: ChatRepository + 'static, TSR: ThreadSummaryRepository + 'static> ChatService<CR, TSR> {
+impl<
+    CR: ChatRepository + 'static,
+    AR: AttachmentRepository + 'static,
+    TSR: ThreadSummaryRepository + 'static,
+> ChatService<CR, AR, TSR>
+{
     pub(crate) fn new(
         db: Arc<DbProvider>,
         chat_repo: Arc<CR>,
+        attachment_repo: Arc<AR>,
         thread_summary_repo: Arc<TSR>,
+        outbox_enqueuer: Arc<dyn OutboxEnqueuer>,
         enforcer: PolicyEnforcer,
         model_resolver: Arc<dyn ModelResolver>,
     ) -> Self {
         Self {
             db,
             chat_repo,
+            attachment_repo,
             thread_summary_repo,
+            outbox_enqueuer,
             enforcer,
             model_resolver,
         }
@@ -245,11 +259,12 @@ impl<CR: ChatRepository + 'static, TSR: ThreadSummaryRepository + 'static> ChatS
     }
 
     /// Soft-delete a chat.
+    ///
+    /// Atomically: soft-deletes the chat, marks all attachments as `cleanup_status = 'pending'`,
+    /// and enqueues a [`ChatCleanupEvent`] for async provider resource cleanup.
     #[instrument(skip(self, ctx), fields(chat_id = %id))]
     pub async fn delete_chat(&self, ctx: &SecurityContext, id: Uuid) -> Result<(), DomainError> {
         tracing::debug!("Deleting chat");
-
-        let conn = self.db.conn().map_err(DomainError::from)?;
 
         let chat_scope = self
             .enforcer
@@ -257,10 +272,57 @@ impl<CR: ChatRepository + 'static, TSR: ThreadSummaryRepository + 'static> ChatS
             .await?
             .ensure_owner(ctx.subject_id());
 
-        let deleted = self.chat_repo.soft_delete(&conn, &chat_scope, id).await?;
-        if !deleted {
-            return Err(DomainError::chat_not_found(id));
-        }
+        let tenant_id = ctx.subject_tenant_id();
+        let chat_repo = Arc::clone(&self.chat_repo);
+        let attachment_repo = Arc::clone(&self.attachment_repo);
+        let outbox_enqueuer = Arc::clone(&self.outbox_enqueuer);
+        let scope_tx = chat_scope.clone();
+
+        self.db
+            .transaction(move |tx| {
+                Box::pin(async move {
+                    let map = |e: DomainError| modkit_db::DbError::Other(anyhow::Error::new(e));
+
+                    let deleted = chat_repo
+                        .soft_delete(tx, &scope_tx, id)
+                        .await
+                        .map_err(map)?;
+                    if !deleted {
+                        return Err(map(DomainError::chat_not_found(id)));
+                    }
+
+                    // Mark all active attachments as pending cleanup.
+                    attachment_repo
+                        .mark_attachments_pending_for_chat(tx, id)
+                        .await
+                        .map_err(map)?;
+
+                    // Enqueue chat-level cleanup event (per DESIGN.md line 1758).
+                    let event = crate::domain::repos::ChatCleanupEvent {
+                        reason: CleanupReason::ChatSoftDelete,
+                        tenant_id,
+                        chat_id: id,
+                        system_request_id: Uuid::new_v4(),
+                        chat_deleted_at: time::OffsetDateTime::now_utc(),
+                    };
+                    outbox_enqueuer
+                        .enqueue_chat_cleanup(tx, event)
+                        .await
+                        .map_err(map)?;
+
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|e| match e {
+                modkit_db::DbError::Other(err) => match err.downcast::<DomainError>() {
+                    Ok(domain_err) => domain_err,
+                    Err(err) => DomainError::from(modkit_db::DbError::Other(err)),
+                },
+                other => DomainError::from(other),
+            })?;
+
+        self.outbox_enqueuer.flush();
 
         tracing::debug!("Successfully deleted chat");
         Ok(())

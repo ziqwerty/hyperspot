@@ -24,7 +24,9 @@ pub(crate) use message_repo::{
     InsertAssistantMessageParams, InsertUserMessageParams, MessageRepository, SnapshotBoundary,
 };
 pub(crate) use model_resolver::ModelResolver;
-pub(crate) use outbox_enqueuer::{AttachmentCleanupEvent, OutboxEnqueuer};
+pub(crate) use outbox_enqueuer::{
+    AttachmentCleanupEvent, ChatCleanupEvent, CleanupOutcome, CleanupReason, OutboxEnqueuer,
+};
 pub(crate) use policy_snapshot_provider::PolicySnapshotProvider;
 pub(crate) use quota_usage_repo::{IncrementReserveParams, QuotaUsageRepository, SettleParams};
 pub(crate) use reaction_repo::{ReactionRepository, UpsertReactionParams};

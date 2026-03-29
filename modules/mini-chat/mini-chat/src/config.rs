@@ -590,6 +590,9 @@ pub struct OutboxConfig {
     /// Queue name for thread summary task events.
     #[serde(default = "default_thread_summary_queue_name")]
     pub thread_summary_queue_name: String,
+    /// Queue name for chat-deletion cleanup events.
+    #[serde(default = "default_chat_cleanup_queue_name")]
+    pub chat_cleanup_queue_name: String,
     /// Queue name for audit events.
     #[serde(default = "default_audit_queue_name")]
     pub audit_queue_name: String,
@@ -605,6 +608,7 @@ impl Default for OutboxConfig {
             queue_name: default_outbox_queue_name(),
             cleanup_queue_name: default_outbox_cleanup_queue_name(),
             thread_summary_queue_name: default_thread_summary_queue_name(),
+            chat_cleanup_queue_name: default_chat_cleanup_queue_name(),
             audit_queue_name: default_audit_queue_name(),
             num_partitions: default_outbox_num_partitions(),
         }
@@ -618,6 +622,9 @@ impl OutboxConfig {
         }
         if self.cleanup_queue_name.trim().is_empty() {
             return Err("outbox cleanup_queue_name must not be empty".to_owned());
+        }
+        if self.chat_cleanup_queue_name.trim().is_empty() {
+            return Err("outbox chat_cleanup_queue_name must not be empty".to_owned());
         }
         if self.thread_summary_queue_name.trim().is_empty() {
             return Err("outbox thread_summary_queue_name must not be empty".to_owned());
@@ -641,6 +648,10 @@ fn default_outbox_queue_name() -> String {
 
 fn default_outbox_cleanup_queue_name() -> String {
     "mini-chat.attachment_cleanup".to_owned()
+}
+
+fn default_chat_cleanup_queue_name() -> String {
+    "mini-chat.chat_cleanup".to_owned()
 }
 
 fn default_thread_summary_queue_name() -> String {

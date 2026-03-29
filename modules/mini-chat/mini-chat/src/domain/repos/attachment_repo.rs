@@ -129,4 +129,58 @@ pub trait AttachmentRepository: Send + Sync {
         scope: &AccessScope,
         chat_id: Uuid,
     ) -> Result<Vec<String>, DomainError>;
+
+    // ── Cleanup methods (no AccessScope — used by background workers) ───
+
+    /// Load all attachments for a chat that still need provider cleanup.
+    ///
+    /// Filters: `chat_id AND cleanup_status = 'pending'`.
+    async fn find_pending_cleanup_by_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<Vec<AttachmentModel>, DomainError>;
+
+    /// Mark a single attachment's cleanup as done.
+    ///
+    /// CAS guard: only transitions from `pending`. Returns rows affected
+    /// (0 if already terminal — idempotent).
+    async fn mark_cleanup_done<C: DBRunner>(
+        &self,
+        runner: &C,
+        attachment_id: Uuid,
+    ) -> Result<u64, DomainError>;
+
+    /// Record a retryable cleanup failure (atomic read-modify-write).
+    ///
+    /// Atomically increments `cleanup_attempts`, sets `last_cleanup_error` and
+    /// `cleanup_updated_at`. If `cleanup_attempts` reaches `max_attempts`, transitions
+    /// to `failed` instead of staying `pending`.
+    async fn record_cleanup_attempt<C: DBRunner>(
+        &self,
+        runner: &C,
+        attachment_id: Uuid,
+        error: &str,
+        max_attempts: u32,
+    ) -> Result<crate::domain::repos::CleanupOutcome, DomainError>;
+
+    /// Bulk-set `cleanup_status = 'pending'` for all active attachments of a chat.
+    ///
+    /// Filters: `chat_id AND cleanup_status IS NULL AND deleted_at IS NULL`.
+    /// Used inside the chat-deletion transaction before the chat itself is soft-deleted.
+    /// Returns count of rows updated.
+    async fn mark_attachments_pending_for_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<u64, DomainError>;
+
+    /// Count attachments in terminal `failed` cleanup state for a chat.
+    ///
+    /// Used to emit a metric when vector store is deleted with failed attachments.
+    async fn count_failed_cleanup_by_chat<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<u64, DomainError>;
 }

@@ -69,6 +69,8 @@ pub struct MiniChatModule {
     worker_cancel: Mutex<Option<CancellationToken>>,
     /// Handles to spawned background workers — joined during `stop()`.
     worker_handles: Mutex<Option<WorkerHandles>>,
+    /// Deferred outbox pipeline params — built in `init()`, started in `start()`.
+    outbox_deferred: OnceLock<OutboxDeferred>,
 }
 
 /// State needed to register OAGW upstreams in `start()` (after GTS is ready).
@@ -77,6 +79,20 @@ struct OagwDeferred {
     authn: Arc<dyn AuthNResolverClient>,
     client_credentials: crate::config::ClientCredentialsConfig,
     providers: std::collections::HashMap<String, ProviderEntry>,
+}
+
+/// State needed to build + start the outbox pipeline in `start()`.
+/// Captured in `init()`, consumed in `start()` after OAGW registration.
+struct OutboxDeferred {
+    db: Arc<crate::domain::service::DbProvider>,
+    outbox_config: crate::config::OutboxConfig,
+    cleanup_config: crate::config::background::CleanupWorkerConfig,
+    model_policy_gw: Arc<ModelPolicyGateway>,
+    audit_gateway: Arc<AuditGateway>,
+    file_storage: Arc<dyn crate::domain::ports::FileStorageProvider>,
+    vector_store_prov: Arc<dyn crate::domain::ports::VectorStoreProvider>,
+    metrics: Arc<dyn MiniChatMetricsPort>,
+    enqueuer: Arc<InfraOutboxEnqueuer>,
 }
 
 impl Default for MiniChatModule {
@@ -89,6 +105,7 @@ impl Default for MiniChatModule {
             worker_configs: OnceLock::new(),
             worker_cancel: Mutex::new(None),
             worker_handles: Mutex::new(None),
+            outbox_deferred: OnceLock::new(),
         }
     }
 }
@@ -176,83 +193,7 @@ impl Module for MiniChatModule {
         // Audit gateway: lazily resolves audit plugin(s) on first emission.
         let audit_gateway = Arc::new(AuditGateway::new(ctx.client_hub(), vendor));
 
-        // Start the outbox pipeline eagerly in init() (migrations ran in phase 2, DB is ready).
-        // The framework guarantees stop() is called on init failure, so the pipeline
-        // will be shut down cleanly if any later init step errors.
-        // The handler resolves the plugin lazily on first message delivery,
-        // avoiding a hard dependency on plugin availability during init().
-        let outbox_db = db.db();
-        let num_partitions = cfg.outbox.num_partitions;
-        let queue_name = cfg.outbox.queue_name.clone();
-        let cleanup_queue_name = cfg.outbox.cleanup_queue_name.clone();
-        let thread_summary_queue_name = cfg.outbox.thread_summary_queue_name.clone();
-        let audit_queue_name = cfg.outbox.audit_queue_name.clone();
-
-        let partitions = Partitions::of(
-            u16::try_from(num_partitions)
-                .map_err(|_| anyhow::anyhow!("num_partitions {num_partitions} exceeds u16"))?,
-        );
-
-        // Metrics are created here (before the outbox) so they can be passed to AuditEventHandler.
-        let metrics_prefix = cfg.metrics.effective_prefix(Self::MODULE_NAME);
-        let scope =
-            opentelemetry::InstrumentationScope::builder(Self::MODULE_NAME.to_owned()).build();
-        let metrics: Arc<dyn MiniChatMetricsPort> = Arc::new(MiniChatMetricsMeter::new(
-            &opentelemetry::global::meter_with_scope(scope),
-            &metrics_prefix,
-        ));
-
-        let outbox_handle = Outbox::builder(outbox_db)
-            .queue(&queue_name, partitions)
-            .decoupled(UsageEventHandler {
-                plugin_provider: model_policy_gw.clone(),
-            })
-            .queue(&cleanup_queue_name, partitions)
-            .decoupled(crate::infra::workers::cleanup_worker::AttachmentCleanupHandler)
-            .queue(&thread_summary_queue_name, partitions)
-            .decoupled(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler)
-            .queue(&audit_queue_name, partitions)
-            // Lease must exceed the plugin's worst-case HTTP budget:
-            // request_timeout_secs * (retry_max_retries + 1) + backoff margin.
-            // The plugin config enforces its settings stay within 50 s (LEASE_BUDGET_SECS).
-            .batch_decoupled_with(
-                AuditEventHandler {
-                    audit_gateway: Arc::clone(&audit_gateway),
-                    metrics: Arc::clone(&metrics),
-                },
-                DecoupledConfig {
-                    lease_duration: Duration::from_secs(60),
-                },
-            )
-            .start()
-            .await
-            .map_err(|e| anyhow::anyhow!("outbox start: {e}"))?;
-
-        let outbox = Arc::clone(outbox_handle.outbox());
-        let outbox_enqueuer = Arc::new(InfraOutboxEnqueuer::new(
-            outbox,
-            queue_name,
-            cleanup_queue_name,
-            thread_summary_queue_name,
-            audit_queue_name,
-            num_partitions,
-        ));
-
-        {
-            let mut guard = self
-                .outbox_handle
-                .lock()
-                .map_err(|e| anyhow::anyhow!("outbox_handle lock: {e}"))?;
-            if guard.is_some() {
-                return Err(anyhow::anyhow!(
-                    "{} outbox_handle already set",
-                    Self::MODULE_NAME
-                ));
-            }
-            *guard = Some(outbox_handle);
-        }
-
-        info!("Outbox pipeline started");
+        // ── Resolve infrastructure deps needed by both outbox handlers and services ──
 
         let authz = ctx
             .client_hub()
@@ -387,6 +328,47 @@ impl Module for MiniChatModule {
             ),
         );
 
+        // ── Metrics ─────────────────────────────────────────────────────────
+
+        let metrics_prefix = cfg.metrics.effective_prefix(Self::MODULE_NAME);
+        let scope =
+            opentelemetry::InstrumentationScope::builder(Self::MODULE_NAME.to_owned()).build();
+        let metrics: Arc<dyn MiniChatMetricsPort> = Arc::new(MiniChatMetricsMeter::new(
+            &opentelemetry::global::meter_with_scope(scope),
+            &metrics_prefix,
+        ));
+
+        // ── Outbox enqueuer (lazy) ────────────────────────────────────────
+        //
+        // The enqueuer is created now (services need it), but the actual outbox
+        // pipeline starts in start() -- after OAGW upstreams are registered.
+        // HTTP traffic doesn't arrive until after start(), so enqueue() is never
+        // called before the outbox handle is set.
+
+        let outbox_enqueuer = Arc::new(InfraOutboxEnqueuer::new(
+            cfg.outbox.queue_name.clone(),
+            cfg.outbox.cleanup_queue_name.clone(),
+            cfg.outbox.chat_cleanup_queue_name.clone(),
+            cfg.outbox.thread_summary_queue_name.clone(),
+            cfg.outbox.audit_queue_name.clone(),
+            cfg.outbox.num_partitions,
+        ));
+
+        // Save params for start() to build + start the outbox pipeline.
+        drop(self.outbox_deferred.set(OutboxDeferred {
+            db: Arc::clone(&db),
+            outbox_config: cfg.outbox,
+            cleanup_config: cfg.cleanup_worker,
+            model_policy_gw: model_policy_gw.clone(),
+            audit_gateway: Arc::clone(&audit_gateway),
+            file_storage: Arc::clone(&file_storage),
+            vector_store_prov: Arc::clone(&vector_store_prov),
+            metrics: Arc::clone(&metrics),
+            enqueuer: Arc::clone(&outbox_enqueuer),
+        }));
+
+        // ── Services ────────────────────────────────────────────────────────
+
         let services = Arc::new(AppServices::new(
             &repos,
             db,
@@ -480,6 +462,78 @@ impl RunnableCapability for MiniChatModule {
                 &mut providers,
             )
             .await?;
+        }
+
+        // Start the outbox pipeline now that OAGW upstreams are registered.
+        // Cleanup handlers can immediately call provider DELETE via OAGW.
+        if let Some(od) = self.outbox_deferred.get() {
+            let outbox_db = od.db.db();
+            let num_partitions = od.outbox_config.num_partitions;
+            let max_cleanup_attempts = od.cleanup_config.max_attempts;
+
+            let partitions = Partitions::of(
+                u16::try_from(num_partitions)
+                    .map_err(|_| anyhow::anyhow!("num_partitions exceeds u16"))?,
+            );
+
+            let outbox_handle = Outbox::builder(outbox_db)
+                .queue(&od.outbox_config.queue_name, partitions)
+                .decoupled(UsageEventHandler {
+                    plugin_provider: od.model_policy_gw.clone(),
+                })
+                .queue(&od.outbox_config.cleanup_queue_name, partitions)
+                .decoupled(
+                    crate::infra::workers::cleanup_worker::AttachmentCleanupHandler::new(
+                        Arc::clone(&od.file_storage),
+                        Arc::clone(&od.db),
+                        ChatRepository::new(modkit_db::odata::LimitCfg {
+                            default: 20,
+                            max: 100,
+                        }),
+                        max_cleanup_attempts,
+                        Arc::clone(&od.metrics),
+                    ),
+                )
+                .queue(&od.outbox_config.chat_cleanup_queue_name, partitions)
+                .decoupled(
+                    crate::infra::workers::cleanup_worker::ChatCleanupHandler::new(
+                        Arc::clone(&od.file_storage),
+                        Arc::clone(&od.vector_store_prov),
+                        Arc::clone(&od.db),
+                        ChatRepository::new(modkit_db::odata::LimitCfg {
+                            default: 20,
+                            max: 100,
+                        }),
+                        max_cleanup_attempts,
+                        Arc::clone(&od.metrics),
+                    ),
+                )
+                .queue(&od.outbox_config.thread_summary_queue_name, partitions)
+                .decoupled(crate::infra::workers::thread_summary_worker::ThreadSummaryHandler)
+                .queue(&od.outbox_config.audit_queue_name, partitions)
+                .batch_decoupled_with(
+                    AuditEventHandler {
+                        audit_gateway: Arc::clone(&od.audit_gateway),
+                        metrics: Arc::clone(&od.metrics),
+                    },
+                    DecoupledConfig {
+                        lease_duration: Duration::from_secs(60),
+                    },
+                )
+                .start()
+                .await
+                .map_err(|e| anyhow::anyhow!("outbox start: {e}"))?;
+
+            // Wire the outbox handle into the lazy enqueuer.
+            od.enqueuer.set_outbox(Arc::clone(outbox_handle.outbox()));
+
+            let mut guard = self
+                .outbox_handle
+                .lock()
+                .map_err(|e| anyhow::anyhow!("outbox_handle lock: {e}"))?;
+            *guard = Some(outbox_handle);
+
+            info!("Outbox pipeline started (OAGW ready)");
         }
 
         let (handles, worker_cancel) =

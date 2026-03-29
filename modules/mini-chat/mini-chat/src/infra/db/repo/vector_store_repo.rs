@@ -99,4 +99,34 @@ impl crate::domain::repos::VectorStoreRepository for VectorStoreRepository {
             .map_err(db_err)?;
         Ok(result.rows_affected)
     }
+
+    // ── System-scoped methods (background workers, no user session) ────
+
+    async fn find_by_chat_system<C: DBRunner>(
+        &self,
+        runner: &C,
+        chat_id: Uuid,
+    ) -> Result<Option<VectorStoreModel>, DomainError> {
+        let scope = AccessScope::allow_all();
+        let found = Entity::find()
+            .filter(Column::ChatId.eq(chat_id))
+            .secure()
+            .scope_with(&scope)
+            .one(runner)
+            .await
+            .map_err(db_err)?;
+        Ok(found)
+    }
+
+    async fn delete_system<C: DBRunner>(&self, runner: &C, id: Uuid) -> Result<u64, DomainError> {
+        let scope = AccessScope::allow_all();
+        let result = Entity::delete_many()
+            .filter(Column::Id.eq(id))
+            .secure()
+            .scope_with(&scope)
+            .exec(runner)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected)
+    }
 }

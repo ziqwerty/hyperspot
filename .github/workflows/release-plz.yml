@@ -178,6 +178,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@9bc92bc5598b4f3bec5d910d352094982cb0c3b9 # 1.92.0
 
+      - name: Install nextest
+        uses: taiki-e/install-action@6ef672efc2b5aabc787a9e94baf4989aa02a97df # v2.70.3
+        with:
+          tool: nextest
+
       - name: cargo test (workspace)
         run: make test-no-macros
 

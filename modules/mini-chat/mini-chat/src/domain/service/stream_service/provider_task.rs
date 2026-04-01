@@ -16,40 +16,64 @@ use crate::infra::llm::{
     RequestMetadata, RequestType, TerminalOutcome,
 };
 
+use modkit_macros::domain_model;
+
 use super::types::{
     ActiveStreamGuard, FinalizationCtx, PROGRESS_UPDATE_INTERVAL, StreamOutcome, StreamTerminal,
     determine_features, normalize_error,
 };
+
+/// Model and provider configuration for a single provider task invocation.
+#[domain_model]
+pub(super) struct ProviderTaskConfig {
+    pub llm: Arc<dyn LlmProvider>,
+    pub upstream_alias: String,
+    pub messages: Vec<LlmMessage>,
+    pub system_instructions: Option<String>,
+    pub tools: Vec<LlmTool>,
+    pub model: String,
+    pub provider_model_id: String,
+    pub max_output_tokens: u32,
+    pub max_tool_calls: u32,
+    pub web_search_max_calls: u32,
+    pub code_interpreter_max_calls: u32,
+    pub api_params: mini_chat_sdk::ModelApiParams,
+    pub provider_file_id_map: std::collections::HashMap<String, crate::domain::llm::AttachmentRef>,
+}
 
 /// All five terminal paths (provider done, incomplete, provider error,
 /// client disconnect, pre-stream error) route through `finalize_turn_cas()`.
 /// SSE terminal events (Done/Error) are emitted only after the CAS winner
 /// commits the transaction (D3).
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::cognitive_complexity,
     clippy::let_underscore_must_use,
     clippy::cast_possible_truncation
 )]
 pub(super) fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepository + 'static>(
-    llm: Arc<dyn LlmProvider>,
-    upstream_alias: String,
     ctx: SecurityContext,
-    messages: Vec<LlmMessage>,
-    system_instructions: Option<String>,
-    tools: Vec<LlmTool>,
-    model: String,
-    provider_model_id: String,
-    max_output_tokens: u32,
-    max_tool_calls: u32,
-    web_search_max_calls: u32,
-    code_interpreter_max_calls: u32,
+    config: ProviderTaskConfig,
     cancel: CancellationToken,
     tx: mpsc::Sender<StreamEvent>,
     fin_ctx: Option<FinalizationCtx<TR, MR>>,
-    provider_file_id_map: std::collections::HashMap<String, crate::domain::llm::AttachmentRef>,
 ) -> tokio::task::JoinHandle<StreamOutcome> {
+    let ProviderTaskConfig {
+        llm,
+        upstream_alias,
+        messages,
+        system_instructions,
+        tools,
+        model,
+        provider_model_id,
+        max_output_tokens,
+        max_tool_calls,
+        web_search_max_calls,
+        code_interpreter_max_calls,
+        api_params,
+        provider_file_id_map,
+    } = config;
+
     let span = if let Some(ref fctx) = fin_ctx {
         tracing::info_span!(
             "provider_stream",
@@ -99,6 +123,25 @@ pub(super) fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepos
             features,
         };
         builder = builder.metadata(metadata);
+
+        // Forward model-policy API params (temperature, top_p, etc.) to the
+        // provider adapter via the generic `additional_params` escape hatch.
+        {
+            let mut params = serde_json::json!({
+                "temperature": api_params.temperature,
+                "top_p": api_params.top_p,
+                "frequency_penalty": api_params.frequency_penalty,
+                "presence_penalty": api_params.presence_penalty,
+            });
+            if !api_params.stop.is_empty() {
+                params["stop"] = serde_json::json!(api_params.stop);
+            }
+            if let Some(extra_body) = api_params.extra_body {
+                params["extra_body"] = extra_body;
+            }
+            builder = builder.additional_params(params);
+        }
+
         let request = builder.build_streaming();
 
         // Call the provider to start streaming
@@ -219,7 +262,7 @@ pub(super) fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepos
                             let is_first_token = matches!(client_event, ClientSseEvent::Delta { .. })
                                 && first_token_time.is_none();
 
-                            if let ClientSseEvent::Delta { ref content, .. } = client_event {
+                            if let ClientSseEvent::Delta { r#type, ref content } = client_event {
                                 if first_token_time.is_none() {
                                     let ttft = stream_start.elapsed();
                                     first_token_time = Some(ttft);
@@ -232,7 +275,12 @@ pub(super) fn spawn_provider_task<TR: TurnRepository + 'static, MR: MessageRepos
                                         fctx.metrics.record_ttft_provider_ms(&fctx.provider_id, &fctx.effective_model, ms);
                                     }
                                 }
-                                accumulated_text.push_str(content);
+                                // Only accumulate visible text for DB storage;
+                                // reasoning deltas are streamed to the client
+                                // but excluded from the persisted content.
+                                if r#type == "text" {
+                                    accumulated_text.push_str(content);
+                                }
 
                                 // Throttled progress timestamp update for orphan detection.
                                 // Timer resets only on success — retry sooner on transient

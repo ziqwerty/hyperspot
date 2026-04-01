@@ -458,9 +458,9 @@ pub fn test_catalog_entry(params: TestCatalogEntryParams) -> ModelCatalogEntry {
                 temperature: 0.7,
                 top_p: 1.0,
                 frequency_penalty: 0.0,
-
                 presence_penalty: 0.0,
                 stop: vec![],
+                extra_body: None,
             },
             features: ModelFeatures {
                 streaming: true,

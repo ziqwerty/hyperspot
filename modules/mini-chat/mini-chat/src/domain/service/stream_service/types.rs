@@ -374,6 +374,7 @@ pub(super) struct PreflightResult {
     pub(super) max_retrieved_chunks_per_turn: u32,
     pub(super) max_tool_calls: u32,
     pub(super) tool_support: mini_chat_sdk::ModelToolSupport,
+    pub(super) api_params: mini_chat_sdk::ModelApiParams,
 }
 
 /// Convert a `PreflightDecision` into a flat `PreflightResult` or a `StreamError`.
@@ -397,6 +398,7 @@ pub(super) fn flatten_preflight(
             max_retrieved_chunks_per_turn,
             max_tool_calls,
             tool_support,
+            api_params,
             ..
         } => Ok(PreflightResult {
             effective_model,
@@ -416,6 +418,7 @@ pub(super) fn flatten_preflight(
             max_retrieved_chunks_per_turn,
             max_tool_calls,
             tool_support,
+            api_params,
         }),
         PreflightDecision::Downgrade {
             effective_model,
@@ -434,6 +437,7 @@ pub(super) fn flatten_preflight(
             max_retrieved_chunks_per_turn,
             max_tool_calls,
             tool_support,
+            api_params,
             ..
         } => Ok(PreflightResult {
             effective_model,
@@ -453,6 +457,7 @@ pub(super) fn flatten_preflight(
             max_retrieved_chunks_per_turn,
             max_tool_calls,
             tool_support,
+            api_params,
         }),
         PreflightDecision::Reject {
             error_code,

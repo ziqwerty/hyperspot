@@ -12,6 +12,7 @@ pub mod openai_file_storage;
 pub mod openai_responses;
 pub mod openai_vector_store;
 pub mod rag_http_client;
+pub mod vllm_responses;
 
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 pub use openai_chat::OpenAiChatProvider;
 pub use openai_responses::OpenAiResponsesProvider;
+pub use vllm_responses::VllmResponsesProvider;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Provider selection
@@ -34,6 +36,9 @@ pub enum ProviderKind {
     /// `OpenAI` Chat Completions API (`/v1/chat/completions`).
     #[serde(rename = "openai_chat_completions")]
     OpenAiChatCompletions,
+    /// vLLM Responses API (`/v1/responses`).
+    #[serde(rename = "vllm_responses")]
+    VllmResponses,
 }
 
 /// Create a provider adapter from a [`ProviderKind`].
@@ -48,5 +53,6 @@ pub fn create_provider(
     match kind {
         ProviderKind::OpenAiResponses => Arc::new(OpenAiResponsesProvider::new(gateway)),
         ProviderKind::OpenAiChatCompletions => Arc::new(OpenAiChatProvider::new(gateway)),
+        ProviderKind::VllmResponses => Arc::new(VllmResponsesProvider::new(gateway)),
     }
 }

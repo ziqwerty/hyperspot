@@ -189,9 +189,12 @@ gts-docs-vendor-release:
 		--exclude "*/helm/*/templates/*" \
 		docs modules libs examples
 
+install-tools:
+	@command -v cargo-nextest >/dev/null 2>&1 || cargo install cargo-nextest
+
 ## Run tests for GTS documentation validator
-gts-docs-test:
-	cargo test -p gts-docs-validator
+gts-docs-test: install-tools
+	cargo nextest run -p gts-docs-validator
 
 ## List all custom project compliance lints (see dylint_lints/README.md)
 dylint-list:
@@ -207,8 +210,8 @@ dylint-list:
 	done
 
 ## Test dylint lints on UI test cases (compile and verify violations)
-dylint-test:
-	@cd dylint_lints && cargo test
+dylint-test: install-tools
+	@cd dylint_lints && cargo nextest run
 
 # Run project compliance dylint lints on the workspace (see `make dylint-list`)
 dylint:
@@ -268,8 +271,8 @@ openapi:
 .PHONY: dev dev-fmt dev-clippy dev-test
 
 ## Run tests in development mode
-dev-test:
-	cargo test --workspace
+dev-test: install-tools
+	cargo nextest run --workspace
 
 ## Auto-fix code formatting
 dev-fmt:
@@ -287,35 +290,35 @@ dev: dev-fmt dev-clippy dev-test
 .PHONY: test test-no-macros test-macros test-sqlite test-pg test-mysql test-db test-users-info-pg
 
 # Run all tests
-test:
-	cargo test --workspace
+test: install-tools
+	cargo nextest run --workspace
 
-test-no-macros:
-	cargo test --workspace --exclude cf-modkit-macros-tests --exclude cf-modkit-db-macros
+test-no-macros: install-tools
+	cargo nextest run --workspace --exclude cf-modkit-macros-tests --exclude cf-modkit-db-macros
 
-test-macros:
-	cargo test -p cf-modkit-db-macros
-	cargo test -p cf-modkit-macros-tests
+test-macros: install-tools
+	cargo nextest run -p cf-modkit-db-macros
+	cargo nextest run -p cf-modkit-macros-tests
 
 ## Run SQLite integration tests
-test-sqlite:
-	cargo test -p cf-modkit-db --features sqlite,integration,preview-outbox
+test-sqlite: install-tools
+	cargo nextest run -p cf-modkit-db --features sqlite,integration,preview-outbox
 	cargo build -p cf-modkit-db --examples --features sqlite,preview-outbox
 
 ## Run PostgreSQL integration tests
-test-pg:
-	cargo test -p cf-modkit-db --features pg,integration,preview-outbox
+test-pg: install-tools
+	cargo nextest run -p cf-modkit-db --features pg,integration,preview-outbox
 
 ## Run MySQL integration tests
-test-mysql:
-	cargo test -p cf-modkit-db --features mysql,integration,preview-outbox
+test-mysql: install-tools
+	cargo nextest run -p cf-modkit-db --features mysql,integration,preview-outbox
 
 # Run all database integration tests
 test-db: test-sqlite test-pg test-mysql
 
 ## Run users-info module integration tests
-test-users-info-pg:
-	cargo test -p users-info --features "integration" -- --nocapture
+test-users-info-pg: install-tools
+	cargo nextest run -p users-info --features "integration"
 
 # -------- Benchmarks --------
 
@@ -387,7 +390,7 @@ MINI_CHAT_FEATURES = mini-chat,static-authn,static-authz,single-tenant,static-cr
 MINI_CHAT_K8S_FEATURES = $(MINI_CHAT_FEATURES),k8s
 
 MINI_CHAT_IMAGE ?= hyperspot-mini-chat
-MINI_CHAT_TAG   ?= latest
+MINI_CHAT_TAG   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
 
 ## Run mini-chat E2E tests (separate binary with mini-chat features)
 e2e-mini-chat:
@@ -506,16 +509,17 @@ mini-chat-helm: mini-chat-docker
 	@if command -v k3s >/dev/null 2>&1; then \
 		docker save $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) | sudo k3s ctr images import -; \
 	elif command -v minikube >/dev/null 2>&1; then \
+		minikube ssh "docker rmi -f $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) 2>/dev/null" || true; \
 		minikube image load $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG); \
 	else \
 		echo "ERROR: k3s or minikube required"; exit 1; \
 	fi
 	helm upgrade --install mini-chat modules/mini-chat/deploy/helm/mini-chat/ \
+		--set image.tag="$(MINI_CHAT_TAG)" \
 		--set secrets.azureOpenaiApiKey="$${AZURE_OPENAI_API_KEY}" \
 		--set secrets.azureOpenaiApiHost="$${AZURE_OPENAI_API_HOST}" \
 		--set postgres.host="$${PG_HOST:-postgres.default.svc.cluster.local}" \
 		--set postgres.password="$${PG_PASSWORD}"
-	@# Force pod restart so it picks up the freshly-loaded image
 	kubectl rollout restart deployment/mini-chat
 	kubectl rollout status deployment/mini-chat --timeout=120s
 
@@ -543,6 +547,7 @@ mini-chat-up:
 	@if docker image inspect $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) >/dev/null 2>&1; then \
 		echo "Loading image $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) into cluster..."; \
 		if command -v minikube >/dev/null 2>&1; then \
+			minikube ssh "docker rmi -f $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) 2>/dev/null" || true; \
 			minikube image load $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG); \
 		else \
 			docker save $(MINI_CHAT_IMAGE):$(MINI_CHAT_TAG) | sudo k3s ctr images import -; \
@@ -557,11 +562,11 @@ mini-chat-up:
 		echo "  export AZURE_OPENAI_API_KEY=... AZURE_OPENAI_API_HOST=..."; \
 	fi
 	helm upgrade --install mini-chat modules/mini-chat/deploy/helm/mini-chat/ \
+		--set image.tag="$(MINI_CHAT_TAG)" \
 		--set secrets.azureOpenaiApiKey="$${AZURE_OPENAI_API_KEY}" \
 		--set secrets.azureOpenaiApiHost="$${AZURE_OPENAI_API_HOST}" \
 		--set postgres.host="$${PG_HOST:-postgres.default.svc.cluster.local}" \
 		--set postgres.password="$${PG_PASSWORD}"
-	@# --- 4. Rollout restart to guarantee the latest image is used ---
 	kubectl rollout restart deployment/mini-chat
 	kubectl rollout status deployment/mini-chat --timeout=120s
 	@echo ""

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::config::EstimationBudgets;
 use crate::infra::db::entity::quota_usage::PeriodType;
-use mini_chat_sdk::ModelToolSupport;
+use mini_chat_sdk::{ModelApiParams, ModelToolSupport};
 
 /// Result of preflight reserve evaluation.
 #[domain_model]
@@ -32,6 +32,8 @@ pub enum PreflightDecision {
         max_tool_calls: u32,
         /// Tool support flags of the effective model.
         tool_support: ModelToolSupport,
+        /// LLM API inference parameters (temperature, `top_p`, etc.).
+        api_params: ModelApiParams,
     },
     Downgrade {
         effective_model: String,
@@ -58,6 +60,8 @@ pub enum PreflightDecision {
         max_tool_calls: u32,
         /// Tool support flags of the effective model.
         tool_support: ModelToolSupport,
+        /// LLM API inference parameters (temperature, `top_p`, etc.).
+        api_params: ModelApiParams,
     },
     Reject {
         error_code: String,

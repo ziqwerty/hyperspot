@@ -32,7 +32,7 @@ const MAX_CODE_INTERPRETER_OUTPUT_CHARS: usize = 8_192;
 
 /// Raw provider SSE event from the Responses API.
 #[derive(Debug, Clone)]
-enum ProviderEvent {
+pub(super) enum ProviderEvent {
     ResponseOutputTextDelta {
         delta: String,
     },
@@ -101,9 +101,28 @@ pub struct RawUsage {
     output_tokens_details: Option<OutputTokensDetails>,
 }
 
+impl RawUsage {
+    /// Convert to the domain [`Usage`] type.
+    pub(super) fn to_usage(&self) -> Usage {
+        Usage {
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_read_input_tokens: self
+                .input_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.cached_tokens),
+            cache_write_input_tokens: 0,
+            reasoning_tokens: self
+                .output_tokens_details
+                .as_ref()
+                .map_or(0, |d| d.reasoning_tokens),
+        }
+    }
+}
+
 /// Provider error payload from `response.failed` event.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct ProviderErrorPayload {
+pub(super) struct ProviderErrorPayload {
     #[serde(default)]
     code: String,
     #[serde(default)]
@@ -118,7 +137,7 @@ struct ProviderErrorEnvelope {
 
 /// Parse an error response body, handling both `{"error":{...}}` (`OpenAI`)
 /// and flat `{"code":"...","message":"..."}` shapes.
-fn parse_error_response(bytes: &[u8]) -> LlmProviderError {
+pub(super) fn parse_error_response(bytes: &[u8]) -> LlmProviderError {
     // Try OpenAI envelope first: {"error": {"message": "...", "code": "..."}}
     if let Ok(envelope) = serde_json::from_slice::<ProviderErrorEnvelope>(bytes) {
         let raw = envelope.error.message.clone();
@@ -412,7 +431,10 @@ impl FromServerEvent for ProviderEvent {
 // ════════════════════════════════════════════════════════════════════════════
 
 /// Translate a raw Responses API event into the shared contract.
-fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> TranslatedEvent {
+pub(super) fn translate_provider_event(
+    event: &ProviderEvent,
+    accumulated_text: &str,
+) -> TranslatedEvent {
     match event {
         ProviderEvent::ResponseOutputTextDelta { delta } => {
             TranslatedEvent::Sse(ClientSseEvent::Delta {
@@ -475,21 +497,7 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
 
         ProviderEvent::ResponseCompleted { response } => {
             let citations = extract_citations(response, accumulated_text);
-            let usage = Usage {
-                input_tokens: response.usage.input_tokens,
-                output_tokens: response.usage.output_tokens,
-                cache_read_input_tokens: response
-                    .usage
-                    .input_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.cached_tokens),
-                cache_write_input_tokens: 0,
-                reasoning_tokens: response
-                    .usage
-                    .output_tokens_details
-                    .as_ref()
-                    .map_or(0, |d| d.reasoning_tokens),
-            };
+            let usage = response.usage.to_usage();
             let raw = serde_json::to_value(response).unwrap_or_default();
             TranslatedEvent::Terminal(TerminalOutcome::Completed {
                 usage,
@@ -530,7 +538,10 @@ fn translate_provider_event(event: &ProviderEvent, accumulated_text: &str) -> Tr
 }
 
 /// Extract citations from a `ResponseCompleted`'s output annotations.
-fn extract_citations(response: &ResponseObject, accumulated_text: &str) -> Vec<Citation> {
+pub(super) fn extract_citations(
+    response: &ResponseObject,
+    accumulated_text: &str,
+) -> Vec<Citation> {
     let mut citations = Vec::new();
 
     for output_item in &response.output {
@@ -905,21 +916,7 @@ impl crate::infra::llm::LlmProvider for OpenAiResponsesProvider {
         // ever is, map_citation_ids() must be applied by the caller.
         let citations = extract_citations(&response_obj, &content);
 
-        let usage = Usage {
-            input_tokens: response_obj.usage.input_tokens,
-            output_tokens: response_obj.usage.output_tokens,
-            cache_read_input_tokens: response_obj
-                .usage
-                .input_tokens_details
-                .as_ref()
-                .map_or(0, |d| d.cached_tokens),
-            cache_write_input_tokens: 0,
-            reasoning_tokens: response_obj
-                .usage
-                .output_tokens_details
-                .as_ref()
-                .map_or(0, |d| d.reasoning_tokens),
-        };
+        let usage = response_obj.usage.to_usage();
 
         let raw = serde_json::to_value(&response_obj).unwrap_or_default();
 

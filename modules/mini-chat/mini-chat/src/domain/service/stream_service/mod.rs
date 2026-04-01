@@ -531,22 +531,25 @@ impl<
         emit_stream_started(&tx, request_id, message_id).await;
 
         Ok(provider_task::spawn_provider_task(
-            resolved_provider.adapter,
-            proxy_path,
             ctx,
-            assembled.messages,
-            assembled.system_instructions,
-            assembled.tools,
-            model,
-            effective_provider_model_id,
-            pf.max_output_tokens_applied.cast_unsigned(),
-            pf.max_tool_calls,
-            self.quota.web_search_max_calls_per_message(),
-            self.quota.code_interpreter_max_calls_per_message(),
+            provider_task::ProviderTaskConfig {
+                llm: resolved_provider.adapter,
+                upstream_alias: proxy_path,
+                messages: assembled.messages,
+                system_instructions: assembled.system_instructions,
+                tools: assembled.tools,
+                model: pf.effective_model,
+                provider_model_id: effective_provider_model_id,
+                max_output_tokens: pf.max_output_tokens_applied.cast_unsigned(),
+                max_tool_calls: pf.max_tool_calls,
+                web_search_max_calls: self.quota.web_search_max_calls_per_message(),
+                code_interpreter_max_calls: self.quota.code_interpreter_max_calls_per_message(),
+                api_params: pf.api_params,
+                provider_file_id_map,
+            },
             cancel,
             tx,
             Some(finalization_ctx),
-            provider_file_id_map,
         ))
     }
 
@@ -1207,22 +1210,25 @@ impl<
         emit_stream_started(&tx, request_id, message_id).await;
 
         Ok(provider_task::spawn_provider_task(
-            resolved_provider.adapter,
-            proxy_path,
             ctx,
-            assembled.messages,
-            assembled.system_instructions,
-            assembled.tools,
-            pf.effective_model,
-            effective_provider_model_id,
-            pf.max_output_tokens_applied.cast_unsigned(),
-            pf.max_tool_calls,
-            self.quota.web_search_max_calls_per_message(),
-            self.quota.code_interpreter_max_calls_per_message(),
+            provider_task::ProviderTaskConfig {
+                llm: resolved_provider.adapter,
+                upstream_alias: proxy_path,
+                messages: assembled.messages,
+                system_instructions: assembled.system_instructions,
+                tools: assembled.tools,
+                model: pf.effective_model,
+                provider_model_id: effective_provider_model_id,
+                max_output_tokens: pf.max_output_tokens_applied.cast_unsigned(),
+                max_tool_calls: pf.max_tool_calls,
+                web_search_max_calls: self.quota.web_search_max_calls_per_message(),
+                code_interpreter_max_calls: self.quota.code_interpreter_max_calls_per_message(),
+                api_params: pf.api_params,
+                provider_file_id_map,
+            },
             cancel,
             tx,
             Some(finalization_ctx),
-            provider_file_id_map,
         ))
     }
 }
@@ -1608,22 +1614,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         // Collect all events from the channel
@@ -1660,22 +1676,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -1705,22 +1731,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -1799,22 +1835,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel.clone(),
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         // Read the first delta
@@ -2491,6 +2537,14 @@ mod tests {
                 computer_use: false,
                 mcp: false,
             },
+            api_params: mini_chat_sdk::ModelApiParams {
+                temperature: 0.7,
+                top_p: 1.0,
+                frequency_penalty: 0.0,
+                presence_penalty: 0.0,
+                stop: vec![],
+                extra_body: None,
+            },
         };
 
         let result = flatten_preflight(decision).expect("Allow should produce Ok");
@@ -2527,6 +2581,14 @@ mod tests {
                 code_interpreter: false,
                 computer_use: false,
                 mcp: false,
+            },
+            api_params: mini_chat_sdk::ModelApiParams {
+                temperature: 0.7,
+                top_p: 1.0,
+                frequency_penalty: 0.0,
+                presence_penalty: 0.0,
+                stop: vec![],
+                extra_body: None,
             },
         };
 
@@ -3071,22 +3133,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "gpt-4o-mini".into(), // effective_model passed as the model param
-            "gpt-4o-mini".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "gpt-4o-mini".into(), // effective_model passed as the model param
+                provider_model_id: "gpt-4o-mini".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             Some(fctx),
-            std::collections::HashMap::new(),
         );
 
         // Collect events
@@ -3825,22 +3897,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -3871,22 +3953,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -3927,22 +4019,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -3970,22 +4072,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -4015,22 +4127,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();
@@ -4071,22 +4193,32 @@ mod tests {
         let cancel = CancellationToken::new();
 
         let handle = provider_task::spawn_provider_task::<TurnRepo, MsgRepo>(
-            provider,
-            "test-alias".to_owned(),
             mock_ctx(),
-            vec![LlmMessage::user("hi")],
-            None,
-            vec![],
-            "test-model".into(),
-            "test-model".into(),
-            4096,
-            2, // max_tool_calls
-            2, // web_search_max_calls
-            2, // code_interpreter_max_calls
+            provider_task::ProviderTaskConfig {
+                llm: provider,
+                upstream_alias: "test-alias".to_owned(),
+                messages: vec![LlmMessage::user("hi")],
+                system_instructions: None,
+                tools: vec![],
+                model: "test-model".into(),
+                provider_model_id: "test-model".into(),
+                max_output_tokens: 4096,
+                max_tool_calls: 2,
+                web_search_max_calls: 2,
+                code_interpreter_max_calls: 2,
+                api_params: mini_chat_sdk::ModelApiParams {
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: vec![],
+                    extra_body: None,
+                },
+                provider_file_id_map: std::collections::HashMap::new(),
+            },
             cancel,
             tx,
             None,
-            std::collections::HashMap::new(),
         );
 
         let mut events = Vec::new();

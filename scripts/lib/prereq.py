@@ -528,9 +528,56 @@ class PrereqCargoLlvmCov(Prereq):
             return PRECHECK_ERROR
 
 
+class PrereqCargoNextest(Prereq):
+    def __init__(self):
+        super().__init__(
+            name="cargo-nextest is installed",
+            remediation=(
+                "Install cargo-nextest using "
+                "'cargo install cargo-nextest'"
+            )
+        )
+
+    def check(self):
+        try:
+            subprocess.check_output(
+                ["cargo", "nextest", "--version"], stderr=subprocess.DEVNULL
+            )
+            return PRECHECK_OK
+        except subprocess.CalledProcessError:
+            try:
+                subprocess.check_call(
+                    ["cargo", "install", "--locked", "cargo-nextest"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                subprocess.check_output(
+                    ["cargo", "nextest", "--version"],
+                    stderr=subprocess.DEVNULL,
+                )
+                return PRECHECK_OK
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                logging.error(
+                    "cargo-nextest is not installed or could not be installed"
+                )
+                logging.error(f"Possible remediation: {self.remediation}")
+                return PRECHECK_ERROR
+        except FileNotFoundError:
+            logging.error(
+                "'cargo' command not found"
+            )
+            logging.error(
+                "Possible remediation: Install Rust and cargo from "
+                "https://rustup.rs/ or using a package manager like "
+                "Homebrew: 'brew install rust'"
+            )
+            return PRECHECK_ERROR
+
+
 # Core prerequisites needed for basic testing
 CORE_PREREQS = [
     PrereqCargo,
+    PrereqCargoNextest,
     PrereqProtoc,
     PrereqPython,
     PrereqPytest,

@@ -44,6 +44,7 @@ fn make_entry(model_id: &str, tier: ModelTier) -> ModelCatalogEntry {
                 frequency_penalty: 0.0,
                 presence_penalty: 0.0,
                 stop: vec![],
+                extra_body: None,
             },
             features: ModelFeatures {
                 streaming: true,

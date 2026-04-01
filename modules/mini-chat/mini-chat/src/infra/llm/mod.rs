@@ -366,8 +366,12 @@ impl Stream for ProviderStream {
         loop {
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(TranslatedEvent::Sse(event)))) => {
-                    // Accumulate delta text for fallback partial_content
-                    if let ClientSseEvent::Delta { ref content, .. } = event {
+                    // Accumulate only visible text (not reasoning) for DB content.
+                    if let ClientSseEvent::Delta {
+                        r#type: "text",
+                        ref content,
+                    } = event
+                    {
                         this.accumulated_text.push_str(content);
                     }
                     return Poll::Ready(Some(Ok(event)));

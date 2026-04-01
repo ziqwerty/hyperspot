@@ -146,6 +146,11 @@ pub struct ModelApiParams {
     pub frequency_penalty: f64,
     pub presence_penalty: f64,
     pub stop: Vec<String>,
+    /// Provider-specific extra body parameters (e.g. vLLM `top_k`,
+    /// `chat_template_kwargs`). Providers that support it will place this
+    /// value under the `"extra_body"` key in the request payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 /// Feature capability flags (API: `PolicyModelFeatures`).
@@ -404,6 +409,7 @@ mod tests {
                 frequency_penalty: 0.0,
                 presence_penalty: 0.0,
                 stop: vec![],
+                extra_body: None,
             },
             features: ModelFeatures {
                 streaming: true,

@@ -715,6 +715,7 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                         .max_retrieved_chunks_per_turn,
                                     max_tool_calls: eff_entry.max_tool_calls,
                                     tool_support: eff_entry.general_config.tool_support.clone(),
+                                    api_params: eff_entry.general_config.api_params.clone(),
                                 },
                                 CascadeDecision::Downgrade {
                                     downgrade_from,
@@ -740,6 +741,7 @@ impl<QR: QuotaUsageRepository + 'static> QuotaService<QR> {
                                         .max_retrieved_chunks_per_turn,
                                     max_tool_calls: eff_entry.max_tool_calls,
                                     tool_support: eff_entry.general_config.tool_support.clone(),
+                                    api_params: eff_entry.general_config.api_params.clone(),
                                 },
                                 CascadeDecision::Reject => unreachable!(),
                             };

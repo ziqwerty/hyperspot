@@ -28,6 +28,7 @@
   - [Compatibility](#compatibility)
   - [NFR Exclusions](#nfr-exclusions)
   - [Recovery](#recovery)
+  - [Observability](#observability)
 - [7. Public Library Interfaces](#7-public-library-interfaces)
 - [8. Use Cases](#8-use-cases)
 - [9. Acceptance Criteria](#9-acceptance-criteria)
@@ -468,7 +469,7 @@ The following quality domains are handled at the platform level and do not requi
 - **Safety**: Not applicable — LLM Gateway is a software-only API module with no physical interaction or safety-critical operations.
 - **Usability / Accessibility**: Not applicable — API-only module with no user interface.
 - **Compliance / Regulatory**: LLM Gateway does not store conversation content. Synchronous request/response data is transient. Async and batch job results are durably persisted for the retention period (up to 48 hours) and may contain provider response data that includes PII depending on consumer requests; Gateway treats all persisted job results as potentially sensitive and relies on retention-based cleanup as the primary data protection control. Compliance requirements for data processed by LLM providers are the responsibility of consumers and the providers themselves.
-- **Operations (Deployment / Monitoring)**: Handled by platform infrastructure. Gateway follows standard ModKit module deployment and observability patterns.
+- **Operations (Deployment / Monitoring)**: Deployment, infrastructure monitoring, distributed tracing, and health checks are handled by platform infrastructure. Module-level operational metrics (request counters, latency histograms, error breakdowns) are in scope — see Observability NFR below.
 - **Maintainability / Documentation**: Follows platform-wide documentation standards. API documentation generated from OpenAPI specs in DESIGN.
 
 ### Recovery
@@ -480,6 +481,23 @@ The following quality domains are handled at the platform level and do not requi
 **Simulated async jobs** (sync provider + async request — Gateway executes the provider call synchronously on behalf of the consumer): NOT guaranteed to survive Gateway outages. If the Gateway instance is interrupted mid-execution, the in-flight provider call is lost and the job is marked failed. Interrupted simulated jobs are not retried to prevent unauthorized spending of provider tokens — the consumer receives a failed job status and must resubmit if desired.
 
 Batch job metadata (ID mappings, status) survives restarts. Individual batch request results follow the same native/simulated distinction as async jobs.
+
+### Observability
+
+- [ ] `p2` - **ID**: `cpt-cf-llm-gateway-nfr-observability-v1`
+
+The system **MUST** emit OpenTelemetry-compatible operational metrics covering the request lifecycle. Metrics **MUST** include:
+
+- Request counters with model, provider, and status dimensions
+- Streaming: streams started and streams aborted (by reason: client disconnect, timeout, error)
+- Provider fallback events with source/target provider and reason
+- Time-to-first-token latency histogram with model and provider dimensions
+- Hook plugin blocks by hook type (pre-call, post-response)
+- Budget operations: reservation attempts and settlement completions
+- Schema validation failures for structured output with model and provider dimensions
+- Async job cache misses (job not found on poll)
+
+All metrics **MUST** be emittable via the platform's OpenTelemetry metrics infrastructure. Metric names **MUST** use the `llm_gateway_` prefix. Label cardinality **MUST** remain bounded — labels are limited to enumerable dimensions (model, provider, status, reason, hook type); unbounded values (tenant ID, request ID) **MUST NOT** be used as metric labels.
 
 ## 7. Public Library Interfaces
 

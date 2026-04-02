@@ -16,6 +16,7 @@
   - [3.3 API Contracts](#33-api-contracts)
   - [3.4 Interactions & Sequences](#34-interactions--sequences)
   - [3.5 Database schemas & tables](#35-database-schemas--tables)
+  - [3.6 Observability Metrics](#36-observability-metrics)
 - [4. Additional Context](#4-additional-context)
   - [4.1 Quality Attribute Coverage](#41-quality-attribute-coverage)
 - [5. Traceability](#5-traceability)
@@ -80,6 +81,7 @@ See [PRD.md](./PRD.md) section 1 "Overview" — Key Problems Solved:
 | `cpt-cf-llm-gateway-nfr-data-retention-v1` | TTL-based lifecycle for job/batch records | `cpt-cf-llm-gateway-component-application-layer` (background purge task), `cpt-cf-llm-gateway-db-persistence` | `expires_at` column on `jobs` and `batches` tables; background purge task deletes rows where `expires_at < now()` | DB audit: no row older than max TTL after purge cycle; purge task execution observable via structured logs |
 | `cpt-cf-llm-gateway-nfr-recovery-v1` | Restart survivability for in-flight async jobs | `cpt-cf-llm-gateway-component-application-layer`, `cpt-cf-llm-gateway-db-persistence` | Native async: `provider_job_id` persisted before returning to consumer; polling resumes after restart (RPO: 0). Simulated async: marked `failed` on restart to prevent unauthorized token spending | Restart test: native jobs resume polling; simulated jobs returned as `failed` with appropriate error |
 | `cpt-cf-llm-gateway-nfr-compatibility-v1` | API backward compatibility within major version | `cpt-cf-llm-gateway-component-api-layer` | Additive-only changes within major version; inter-module communication via SDK traits only (no internal type coupling) | Regression test suite runs on each release; breaking changes require major version bump |
+| `cpt-cf-llm-gateway-nfr-observability-v1` | OpenTelemetry operational metrics for request lifecycle | `cpt-cf-llm-gateway-component-application-layer` | Counters and histograms emitted at key processing points (request completion, fallback, stream abort, hook block, budget ops, schema validation, TTFT); labels bounded to enumerable dimensions | Metrics endpoint returns expected metric names; integration test triggers each metric and verifies counter increment / histogram observation |
 
 #### Key ADRs
 
@@ -1330,6 +1332,41 @@ Stores batch job metadata and individual request results. Same retention policy 
 **Background tasks**:
 - **Job purge task**: Periodically deletes rows from `jobs` and `batches` where `expires_at < now()`.
 
+### 3.6 Observability Metrics
+
+Gateway emits the following OpenTelemetry metrics (NFR `cpt-cf-llm-gateway-nfr-observability-v1`). All metrics use the `llm_gateway_` prefix and are registered via the platform's metrics infrastructure at module startup.
+
+#### Counters
+
+| Metric | Labels | Emitted when |
+|--------|--------|--------------|
+| `llm_gateway_requests_total` | `model`, `provider`, `status` | Request completes (success or error) |
+| `llm_gateway_fallback_total` | `from_provider`, `to_provider`, `reason` | Primary provider fails and fallback is activated (`cpt-cf-llm-gateway-seq-provider-fallback-v1`) |
+| `llm_gateway_stream_abort_total` | `reason` (`client_disconnect`, `timeout`, `error`) | SSE stream terminates before completion |
+| `llm_gateway_hook_block_total` | `hook_type` (`pre_call`, `post_response`) | Hook plugin blocks a request (`cpt-cf-llm-gateway-fr-pre-call-interceptor-v1`) |
+| `llm_gateway_budget_reserve_total` | — | Quota Manager `check_quota` is called before execution |
+| `llm_gateway_budget_settle_total` | — | Usage Tracker `report_usage` is called after execution |
+| `llm_gateway_schema_validation_fail_total` | `model`, `provider` | Structured output fails JSON Schema validation (`cpt-cf-llm-gateway-fr-structured-output-v1`) |
+| `llm_gateway_job_cache_miss_total` | — | Consumer polls for an async job ID that is not found in DB |
+
+#### Histograms
+
+| Metric | Labels | Buckets | Emitted when |
+|--------|--------|---------|--------------|
+| `llm_gateway_ttft_seconds` | `model`, `provider` | 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0 | First token received from provider (streaming and non-streaming) |
+
+#### Label cardinality
+
+All labels are bounded to enumerable values:
+
+- `model` — resolved model identifier from Model Registry (finite set per tenant configuration)
+- `provider` / `from_provider` / `to_provider` — provider name from Model Registry (finite set of configured providers)
+- `status` — HTTP-level status category (`ok`, `client_error`, `server_error`, `timeout`, `provider_error`)
+- `reason` — fixed enum per metric (documented above)
+- `hook_type` — fixed enum: `pre_call`, `post_response`
+
+Unbounded identifiers (tenant ID, request ID, user ID) **MUST NOT** be used as metric labels — they belong in structured logs and distributed traces, not in metric dimensions.
+
 ## 4. Additional Context
 
 ### 4.1 Quality Attribute Coverage
@@ -1358,7 +1395,7 @@ Gateway integrates with external LLM providers exclusively through Outbound API 
 
 #### Operations
 
-Not applicable at the module level — Gateway is deployed as part of the hyperspot-server binary. Observability (logging, metrics, distributed tracing) is provided by the ModKit platform. Gateway emits structured audit events via the Audit Module (`cpt-cf-llm-gateway-fr-audit-events-v1`). Health checks are provided by the platform.
+Infrastructure concerns (deployment, health checks, distributed tracing) are handled by the CyberFabric platform. Gateway defines module-level OpenTelemetry metrics (section 3.6) covering request lifecycle, provider interactions, fallback events, streaming state, hook actions, budget operations, schema validation outcomes, and time-to-first-token latency (NFR `cpt-cf-llm-gateway-nfr-observability-v1`). Structured audit events are emitted via the Audit Module (`cpt-cf-llm-gateway-fr-audit-events-v1`).
 
 #### Maintainability
 
@@ -1385,7 +1422,7 @@ All functional requirements (23 FRs) and non-functional requirements (4 NFRs) fr
 | Source | Direction | Target | Coverage |
 |--------|-----------|--------|----------|
 | PRD FRs (23) | → | DESIGN Architecture Drivers (section 1.2) | All covered |
-| PRD NFRs (4) | → | DESIGN Architecture Drivers (section 1.2) | All covered |
+| PRD NFRs (5) | → | DESIGN Architecture Drivers (section 1.2) | All covered |
 | ADRs (7) | → | DESIGN Architecture Drivers + inline on principles/constraints | All covered |
 | DESIGN Components (7) | → | DECOMPOSITION | Pending |
 | DESIGN Sequences (23) | → | FEATURE | Pending |

@@ -58,8 +58,12 @@ pub const MODKIT_DIRECTORY_ENDPOINT_ENV: &str = "MODKIT_DIRECTORY_ENDPOINT";
 /// Environment variable name for passing rendered module config to `OoP` modules.
 pub const MODKIT_MODULE_CONFIG_ENV: &str = "MODKIT_MODULE_CONFIG";
 
-/// Default shutdown deadline for graceful module stop (30 seconds).
-pub const DEFAULT_SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Default shutdown deadline for graceful module stop (35 seconds).
+///
+/// This is intentionally 5 seconds longer than `WithLifecycle::stop_timeout` (30s default)
+/// to ensure deterministic behavior: the lifecycle's internal timeout fires first,
+/// and the runtime deadline acts as a hard backstop.
+pub const DEFAULT_SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(35);
 
 /// `HostRuntime` owns the lifecycle orchestration for `ModKit`.
 ///
@@ -129,7 +133,7 @@ impl HostRuntime {
 
     /// Set a custom shutdown deadline for graceful module stop.
     ///
-    /// This is the maximum time the runtime will wait for modules to stop gracefully
+    /// This is the maximum time the runtime will wait for each module to stop gracefully
     /// before sending the hard-stop signal (cancelling the deadline token).
     ///
     /// # Relationship with `WithLifecycle::stop_timeout`
@@ -617,27 +621,31 @@ impl HostRuntime {
         // Stop all modules in reverse order, each with its own independent deadline
         for e in self.registry.modules().iter().rev() {
             let module_name = e.name;
+
+            // Create a fresh deadline token for THIS module
+            // Each module gets the full shutdown_deadline independently
             let deadline_token = CancellationToken::new();
+            let deadline_token_for_timeout = deadline_token.clone();
 
-            tokio::select! {
-                () = tokio::time::sleep(deadline) => {
-                    tracing::warn!(
-                        module = module_name,
-                        deadline_secs = deadline.as_secs(),
-                        "Module shutdown deadline reached, sending hard-stop signal"
-                    );
+            // Spawn a task to cancel this module's deadline token after shutdown_deadline
+            let deadline_task = tokio::spawn(async move {
+                tokio::time::sleep(deadline).await;
+                tracing::warn!(
+                    module = module_name,
+                    deadline_secs = deadline.as_secs(),
+                    "Module shutdown deadline reached, sending hard-stop signal"
+                );
+                deadline_token_for_timeout.cancel();
+            });
 
-                    // Hard-stop signal for this module
-                    deadline_token.cancel();
+            // Stop this module with its own deadline token
+            // The module can observe the token transition from uncancelled→cancelled
+            Self::stop_one_module(e, deadline_token).await;
 
-                    // Optional: wait for stop_one_module to observe cancellation and finish.
-                    Self::stop_one_module(e, deadline_token).await;
-                }
-
-                () = Self::stop_one_module(e, deadline_token.clone()) => {
-                    // Module stopped before deadline
-                }
-            }
+            // Cancel the deadline task and await it to ensure full cleanup
+            deadline_task.abort();
+            #[allow(clippy::let_underscore_must_use)]
+            let _ = deadline_task.await;
         }
 
         Ok(())
@@ -1225,8 +1233,8 @@ mod tests {
         use std::time::Duration;
 
         struct GracefulModule {
-            graceful_completed: Arc<AtomicBool>,
-            deadline_fired: Arc<AtomicBool>,
+            graceful_completed: AtomicBool,
+            deadline_fired: AtomicBool,
         }
 
         #[async_trait::async_trait]
@@ -1255,11 +1263,9 @@ mod tests {
             }
         }
 
-        let graceful_completed = Arc::new(AtomicBool::new(false));
-        let deadline_fired = Arc::new(AtomicBool::new(false));
         let module = Arc::new(GracefulModule {
-            graceful_completed: graceful_completed.clone(),
-            deadline_fired: deadline_fired.clone(),
+            graceful_completed: AtomicBool::new(false),
+            deadline_fired: AtomicBool::new(false),
         });
 
         let mut builder = RegistryBuilder::default();
@@ -1287,12 +1293,12 @@ mod tests {
 
         // Graceful shutdown should have completed
         assert!(
-            graceful_completed.load(Ordering::SeqCst),
+            module.graceful_completed.load(Ordering::SeqCst),
             "graceful shutdown should complete"
         );
         // Deadline should NOT have fired (module finished before deadline)
         assert!(
-            !deadline_fired.load(Ordering::SeqCst),
+            !module.deadline_fired.load(Ordering::SeqCst),
             "deadline should not fire when graceful shutdown completes quickly"
         );
     }
@@ -1303,8 +1309,8 @@ mod tests {
         use std::time::Duration;
 
         struct SlowModule {
-            graceful_completed: Arc<AtomicBool>,
-            deadline_fired: Arc<AtomicBool>,
+            graceful_completed: AtomicBool,
+            deadline_fired: AtomicBool,
         }
 
         #[async_trait::async_trait]
@@ -1333,11 +1339,9 @@ mod tests {
             }
         }
 
-        let graceful_completed = Arc::new(AtomicBool::new(false));
-        let deadline_fired = Arc::new(AtomicBool::new(false));
         let module = Arc::new(SlowModule {
-            graceful_completed: graceful_completed.clone(),
-            deadline_fired: deadline_fired.clone(),
+            graceful_completed: AtomicBool::new(false),
+            deadline_fired: AtomicBool::new(false),
         });
 
         let mut builder = RegistryBuilder::default();
@@ -1365,12 +1369,12 @@ mod tests {
 
         // Graceful shutdown should NOT have completed (deadline fired first)
         assert!(
-            !graceful_completed.load(Ordering::SeqCst),
+            !module.graceful_completed.load(Ordering::SeqCst),
             "graceful shutdown should not complete when deadline fires first"
         );
         // Deadline should have fired
         assert!(
-            deadline_fired.load(Ordering::SeqCst),
+            module.deadline_fired.load(Ordering::SeqCst),
             "deadline should fire for slow modules"
         );
     }

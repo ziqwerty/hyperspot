@@ -27,6 +27,7 @@ members = [
     "de13_common_patterns/de1301_no_print_macros",
     # "de13_common_patterns/de1302_error_from_to_string",
     "de13_common_patterns/de1303_no_primitive_type_alias",
+    "de11_testing/de1101_tests_in_separate_files",
 ]
 resolver = "3"
 

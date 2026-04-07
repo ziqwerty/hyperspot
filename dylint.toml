@@ -5,3 +5,61 @@
 libraries = [
     { path = "dylint_lints/de*/de*" }
 ]
+
+# DE1101: Tests must be in separate files.
+# Remove entries as modules are migrated.
+[de1101_tests_in_separate_files]
+excluded_paths = [
+    "examples",
+    "apps",
+    "plugins",
+
+    # libs/
+    "libs/modkit",
+    "libs/modkit-auth",
+    "libs/modkit-canonical-errors",
+    "libs/modkit-canonical-errors-macro",
+    "libs/modkit-db",
+    "libs/modkit-db-macros",
+    "libs/modkit-errors",
+    "libs/modkit-errors-macro",
+    "libs/modkit-http",
+    "libs/modkit-macros",
+    "libs/modkit-macros-tests",
+    "libs/modkit-node-info",
+    "libs/modkit-odata",
+    "libs/modkit-odata-macros",
+    "libs/modkit-sdk",
+    "libs/modkit-security",
+    "libs/modkit-transport-grpc",
+    "libs/modkit-utils",
+    "libs/system-sdks",
+
+    # modules/
+    "modules/approval-service",
+    "modules/chat-engine",
+    "modules/credstore",
+    "modules/file-parser",
+    "modules/file-storage",
+    "modules/llm-gateway",
+    "modules/mini-chat",
+    "modules/model-registry",
+    "modules/serverless-runtime",
+    "modules/simple-resource-registry",
+    "modules/simple-user-settings",
+
+    # modules/system/
+    "modules/system/api-gateway",
+    "modules/system/authn-resolver",
+    "modules/system/authz-resolver",
+    "modules/system/grpc-hub",
+    "modules/system/module-orchestrator",
+    "modules/system/nodes-registry",
+    "modules/system/oagw",
+    "modules/system/resource-group",
+    "modules/system/tenant-resolver",
+    "modules/system/types",
+    "modules/system/types-registry",
+    "modules/system/types-sdk",
+    "modules/system/usage-collector",
+]

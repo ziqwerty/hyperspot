@@ -293,12 +293,6 @@
           "allow_credentials": {
             "type": "boolean"
           },
-          "allowed_headers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "allowed_methods": {
             "items": {
               "$ref": "#/components/schemas/CorsHttpMethod"
@@ -319,11 +313,6 @@
               "type": "string"
             },
             "type": "array"
-          },
-          "max_age": {
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
           },
           "sharing": {
             "$ref": "#/components/schemas/SharingMode"

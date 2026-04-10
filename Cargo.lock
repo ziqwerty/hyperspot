@@ -3865,6 +3865,7 @@ dependencies = [
  "cf-grpc-hub",
  "cf-mini-chat",
  "cf-modkit",
+ "cf-modkit-db",
  "cf-modkit-http",
  "cf-module-orchestrator",
  "cf-nodes-registry",

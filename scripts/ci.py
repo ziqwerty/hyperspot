@@ -317,6 +317,31 @@ def kill_existing_server(port):
     kill_port_holder(int(port))
 
 
+def _resolve_docker_host_ip() -> str:
+    """Resolve the Docker host gateway IP address.
+
+    Returns an IP string (e.g. ``172.17.0.1``) so that OAGW sees an
+    IP-based endpoint.  This avoids hostname-based alias auto-derivation which
+    rejects the explicit aliases supplied by the test helpers.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "network", "inspect", "bridge",
+             "--format", "{{(index .IPAM.Config 0).Gateway}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        ip = result.stdout.strip()
+        if ip and not ip.startswith("{"):
+            print(f"Resolved Docker host gateway IP: {ip}")
+            return ip
+    except Exception:
+        pass
+
+    # Fallback: standard Docker bridge gateway.
+    print("Using default Docker host gateway IP: 172.17.0.1")
+    return "172.17.0.1"
+
+
 def cmd_e2e(args):
     base_url = os.environ.get("E2E_BASE_URL", "http://localhost:8086")
 
@@ -345,16 +370,17 @@ def cmd_e2e(args):
 
         # Build image
         step("Building Docker image for E2E tests")
+        profile_suffix = "" if not args.docker_profile or args.docker_profile == "default" else f"-{args.docker_profile}"
         build_cmd = [
             "docker",
             "build",
             "-f",
             "testing/docker/hyperspot.Dockerfile",
             "-t",
-            "hyperspot-api:e2e",
+            f"hyperspot-api{profile_suffix}:e2e",
         ]
 
-        # Add build args for cargo features if specified
+        # Add build args for cargo arguments if specified
         if args.features:
             build_cmd.extend(["--build-arg", f"CARGO_FEATURES={args.features}"])
 
@@ -377,17 +403,26 @@ def cmd_e2e(args):
 
         # Start environment
         step("Starting E2E docker-compose environment")
-        run_cmd(
-            [
-                "docker",
-                "compose",
-                "-f",
-                "testing/docker/docker-compose.yml",
-                "up",
-                "--force-recreate",
-                "-d",
-            ]
-        )
+        compose_cmd = [
+            "docker",
+            "compose",
+            "-f",
+            "testing/docker/docker-compose.yml",
+        ]
+        
+        # Add profile if specified, otherwise use 'default'
+        if args.docker_profile:
+            if args.docker_profile not in ['default', 'postgres', 'mariadb']:
+                print(f"ERROR: Invalid profile '{args.docker_profile}'. Must be 'default', 'postgres' or 'mariadb'")
+                sys.exit(1)
+            compose_cmd.extend(["--profile", args.docker_profile])
+            print(f"Using profile: {args.docker_profile}")
+        else:
+            compose_cmd.extend(["--profile", "default"])
+            print("Using profile: default (no database)")
+
+        compose_cmd.extend(["up", "-d", "--force-recreate"])
+        run_cmd(compose_cmd)
         docker_env_started = True
 
         # Wait for healthz
@@ -477,7 +512,10 @@ def cmd_e2e(args):
     # Set E2E_DOCKER_MODE flag for the tests to know which mode they're in
     if args.docker:
         env["E2E_DOCKER_MODE"] = "1"
-        env.setdefault("E2E_MOCK_UPSTREAM_URL", "http://mock:8080")
+        # Use the Docker host gateway IP instead of hostname so the OAGW
+        # server sees an IP-based endpoint (requiring explicit alias).
+        docker_host_ip = _resolve_docker_host_ip()
+        env.setdefault("E2E_MOCK_UPSTREAM_URL", f"http://{docker_host_ip}:19876")
 
     pytest_cmd = [PYTHON, "-m", "pytest", "testing/e2e", "-vv"]
     if args.smoke:
@@ -495,16 +533,19 @@ def cmd_e2e(args):
 
     if args.docker and docker_env_started:
         step("Stopping E2E docker-compose environment")
-        run_cmd_allow_fail(
-            [
-                "docker",
-                "compose",
-                "-f",
-                "testing/docker/docker-compose.yml",
-                "down",
-                "-v",
-            ]
-        )
+        # Use same profile logic as startup: default to "default" if not specified
+        profile = args.docker_profile if args.docker_profile else "default"
+        down_cmd = [
+            "docker",
+            "compose",
+            "-f",
+            "testing/docker/docker-compose.yml",
+            "--profile",
+            profile,
+            "down",
+            "-v",
+        ]
+        run_cmd_allow_fail(down_cmd)
 
     # Stop server if we started it
     if server_process is not None:
@@ -871,6 +912,12 @@ def build_parser():
         "--smoke",
         action="store_true",
         help="Run only tests marked with @pytest.mark.smoke",
+    )
+    p_e2e_docker.add_argument(
+        "--docker-profile",
+        type=str,
+        choices=['default', 'postgres', 'mariadb'],
+        help="Docker Compose profile to use (default, postgres or mariadb)",
     )
     p_e2e_docker.add_argument(
         "pytest_args",

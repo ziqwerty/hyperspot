@@ -13,6 +13,9 @@ workspace = true
 default = []
 # FIPS-140-3: use the AWS-LC FIPS-validated crypto module for all cryptographic operations
 fips = ["modkit/fips", "modkit-http/fips", "api_egress/fips"]
+
+db-mysql = ["modkit-db/mysql", "users-info?/db-mysql"]
+
 users-info-example = ["dep:users-info"]
 oop-example = ["dep:calculator-gateway", "dep:calculator"]
 single-tenant = ["dep:single-tenant-tr-plugin"]
@@ -29,6 +32,7 @@ mimalloc = { version = "0.1" }
 # Local crates
 modkit = { workspace = true, features = ["bootstrap"] }
 modkit-http = { workspace = true }
+modkit-db = { workspace = true }
 
 # System modules
 api_gateway = { package = "cf-api-gateway", path = "../../modules/system/api-gateway" }

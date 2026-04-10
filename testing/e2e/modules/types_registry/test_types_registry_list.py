@@ -87,9 +87,9 @@ async def test_list_entities_basic(base_url, auth_headers):
 @pytest.mark.asyncio
 async def test_list_entities_filter_by_is_schema_true(base_url, auth_headers):
     """
-    Test GET /types-registry/v1/entities?isSchema=true
+    Test GET /types-registry/v1/entities?is_schema=true
 
-    Verifies filtering entities by isSchema=true (types only).
+    Verifies filtering entities by is_schema=true (types only).
     """
     async with httpx.AsyncClient(timeout=10.0) as client:
         await register_test_entities(client, base_url, auth_headers)
@@ -122,9 +122,9 @@ async def test_list_entities_filter_by_is_schema_true(base_url, auth_headers):
 @pytest.mark.asyncio
 async def test_list_entities_filter_by_is_schema_false(base_url, auth_headers):
     """
-    Test GET /types-registry/v1/entities?isSchema=false
+    Test GET /types-registry/v1/entities?is_schema=false
 
-    Verifies filtering entities by isSchema=false (instances only).
+    Verifies filtering entities by is_schema=false (instances only).
     """
     async with httpx.AsyncClient(timeout=10.0) as client:
         await register_test_entities(client, base_url, auth_headers)

@@ -7,6 +7,10 @@ OPENAPI_OUT ?= docs/api/api.json
 E2E_FEATURES ?= $(strip $(shell cat config/e2e-features.txt 2>/dev/null))
 E2E_ARGS ?= $(if $(E2E_FEATURES),--features $(E2E_FEATURES),)
 
+# Features not supported for MySQL/MariaDB to be filtered out for e2e-docker-mysql
+E2E_MYSQL_EXCLUDE := mini-chat
+E2E_FEATURES_MYSQL = $(shell echo "$(E2E_FEATURES)" | tr ',' '\n' | grep -vF '$(E2E_MYSQL_EXCLUDE)' | paste -sd,)
+
 # -------- Utility macros --------
 
 define check_tool
@@ -432,7 +436,7 @@ bench-db-longhaul: bench-pg-longhaul bench-mysql-longhaul bench-mariadb-longhaul
 
 # -------- E2E tests --------
 
-.PHONY: e2e e2e-local e2e-local-smoke e2e-mini-chat e2e-docker e2e-docker-smoke
+.PHONY: e2e e2e-local e2e-local-smoke e2e-mini-chat e2e-docker e2e-docker-pg e2e-docker-mysql e2e-docker-smoke
 
 # Run E2E tests in Docker (default)
 e2e: e2e-docker
@@ -444,6 +448,14 @@ e2e-docker:
 ## Run E2E smoke tests in Docker (only tests marked @pytest.mark.smoke)
 e2e-docker-smoke:
 	python3 scripts/ci.py e2e-docker $(E2E_ARGS) -- -m smoke
+
+## Run E2E tests in Docker environment with PostgreSQL
+e2e-docker-pg:
+	python3 scripts/ci.py e2e-docker --docker-profile postgres $(E2E_ARGS)
+
+## Run E2E tests in Docker environment with MariaDB
+e2e-docker-mysql:
+	python3 scripts/ci.py e2e-docker --docker-profile mariadb --features "db-mysql,$(E2E_FEATURES_MYSQL)"
 
 # Run E2E tests locally
 e2e-local:

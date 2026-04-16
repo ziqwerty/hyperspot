@@ -1,7 +1,59 @@
+# Updated: 2026-04-07 by Constructor Tech
 # Dylint Configuration for Hyperspot
 
 [workspace.metadata.dylint]
 # Path to the local dylint linters
 libraries = [
     { path = "dylint_lints/de*/de*" }
+]
+
+# DE1101: Tests must be in separate files.
+# Remove entries as modules are migrated.
+[de1101_tests_in_separate_files]
+# Maximum number of inline test lines allowed before the lint enforces splitting
+# into a separate `*_tests.rs` file. Set to 0 to always require separation.
+# Default: 100
+max_inline_test_lines = 100
+excluded_paths = [
+    # libs/
+    "libs/modkit",
+    "libs/modkit-auth",
+    "libs/modkit-canonical-errors",
+    "libs/modkit-canonical-errors-macro",
+    "libs/modkit-db",
+    "libs/modkit-db-macros",
+    "libs/modkit-errors",
+    "libs/modkit-errors-macro",
+    "libs/modkit-http",
+    "libs/modkit-macros",
+    "libs/modkit-macros-tests",
+    "libs/modkit-node-info",
+    "libs/modkit-odata",
+    "libs/modkit-odata-macros",
+    "libs/modkit-sdk",
+    "libs/modkit-security",
+    "libs/modkit-transport-grpc",
+    "libs/modkit-utils",
+    "libs/system-sdks",
+
+    # modules/
+    "modules/approval-service",
+    "modules/file-parser",
+    "modules/llm-gateway",
+    "modules/mini-chat",
+    "modules/model-registry",
+    "modules/serverless-runtime",
+    "modules/simple-resource-registry",
+    "modules/simple-user-settings",
+
+    # modules/system/
+    "modules/system/api-gateway",
+    "modules/system/grpc-hub",
+    "modules/system/module-orchestrator",
+    "modules/system/nodes-registry",
+    "modules/system/oagw",
+    "modules/system/types",
+    "modules/system/types-registry",
+    "modules/system/types-sdk",
+    "modules/system/usage-collector",
 ]

@@ -9,16 +9,18 @@ Cyber Fabric takes a **defense-in-depth** approach to security, combining Rust's
 - [1. Rust Language Safety](#1-rust-language-safety)
 - [2. Compile-Time Tenant Scoping (Secure ORM)](#2-compile-time-tenant-scoping-secure-orm)
 - [3. Authentication & Authorization Architecture](#3-authentication--authorization-architecture)
-- [4. Compile-Time Linting — Clippy](#4-compile-time-linting--clippy)
-- [5. Compile-Time Linting — Custom Dylint Rules](#5-compile-time-linting--custom-dylint-rules)
-- [6. Dependency Security — cargo-deny](#6-dependency-security--cargo-deny)
-- [7. Cryptographic Stack & FIPS-140-3](#7-cryptographic-stack--fips-140-3)
-- [8. Continuous Fuzzing](#8-continuous-fuzzing)
-- [9. Security Scanners in CI](#9-security-scanners-in-ci)
-- [10. PR Review Bots](#10-pr-review-bots)
-- [11. Specification Templates & SDLC](#11-specification-templates--sdlc)
-- [12. Repository Scaffolding — Cyber Fabric CLI](#12-repository-scaffolding--cyber-fabric-cli)
-- [13. Opportunities for Improvement](#13-opportunities-for-improvement)
+- [4. Credentials Storage Architecture](#4-credentials-storage-architecture)
+- [5. Outbound API Gateway (OAGW)](#5-outbound-api-gateway-oagw)
+- [6. Compile-Time Linting — Clippy](#6-compile-time-linting--clippy)
+- [7. Compile-Time Linting — Custom Dylint Rules](#7-compile-time-linting--custom-dylint-rules)
+- [8. Dependency Security — cargo-deny](#8-dependency-security--cargo-deny)
+- [9. Cryptographic Stack & FIPS-140-3](#9-cryptographic-stack--fips-140-3)
+- [10. Continuous Fuzzing](#10-continuous-fuzzing)
+- [11. Security Scanners in CI](#11-security-scanners-in-ci)
+- [12. PR Review Bots](#12-pr-review-bots)
+- [13. Specification Templates & SDLC](#13-specification-templates--sdlc)
+- [14. Repository Scaffolding — Cyber Fabric CLI](#14-repository-scaffolding--cyber-fabric-cli)
+- [15. Opportunities for Improvement](#15-opportunities-for-improvement)
 
 ---
 
@@ -73,13 +75,14 @@ pub struct Model {
 
 ## 3. Authentication & Authorization Architecture
 
-> Source: [`docs/arch/authorization/`](../arch/authorization/) · [`modules/system/authn-resolver/`](../../modules/system/authn-resolver/) · [`modules/system/authz-resolver/`](../../modules/system/authz-resolver/)
+> Source: [`docs/arch/authorization/`](../arch/authorization/) · [`modules/system/authn-resolver/`](../../modules/system/authn-resolver/) · [`modules/system/authz-resolver/`](../../modules/system/authz-resolver/) · [`modules/system/tenant-resolver/`](../../modules/system/tenant-resolver/)
 
-Cyber Fabric implements a **PDP/PEP authorization model** per NIST SP 800-162:
+Cyber Fabric implements a **PDP/PEP authorization model** per NIST SP 800-162, extended with **OpenID AuthZEN 1.0** constraint semantics (see [ADR-0001](../arch/authorization/ADR/0001-pdp-pep-authorization-model.md)):
 
 ```
 Client → AuthN Middleware → AuthN Resolver (token validation)
        → Module Handler (PEP) → AuthZ Resolver (PDP, policy evaluation)
+       → Constraints compiled to AccessScope
        → Database (query with WHERE clauses from constraints)
 ```
 
@@ -97,20 +100,84 @@ pub struct SecurityContext {
 }
 ```
 
+`bearer_token` is stored as `Secret<String>` — redacted in `Debug`/`Display`, never serialized or logged. Introspection caches key by `sha256(token)`, not the raw token.
+
 ### AuthN Resolver
 
-Validates bearer tokens (JWT signature verification or introspection), extracts claims, and constructs the `SecurityContext`. Pluggable via vendor-specific implementations (OIDC/JWT plugin documented in [`AUTHN_JWT_OIDC_PLUGIN.md`](../arch/authorization/AUTHN_JWT_OIDC_PLUGIN.md)).
+> Source: [`AUTHN_JWT_OIDC_PLUGIN.md`](../arch/authorization/AUTHN_JWT_OIDC_PLUGIN.md) · [ADR-0002](../arch/authorization/ADR/0002-split-authn-authz-resolvers.md) · [ADR-0003](../arch/authorization/ADR/0003-authn-resolver-minimalist-interface.md)
 
-### AuthZ Resolver (PDP)
+Validates bearer tokens (JWT signature verification or introspection), extracts claims, and constructs the `SecurityContext`. AuthN and AuthZ are **split into independent resolver modules** (ADR-0002) with pluggable vendor-specific implementations.
 
-Evaluates authorization policies and returns **decisions + row-level constraints**. Constraints are compiled into `AccessScope` objects that translate to SQL WHERE clauses, enforcing authorization at the query level rather than just point-in-time access checks.
+The **reference OIDC/JWT plugin** supports:
 
-### Multi-Tenancy
+- **JWT tokens** — local validation via OIDC discovery → JWKS → signature verification (`kid`, `exp`, optional `aud`), with configurable claim mapping to `SecurityContext` fields.
+- **Opaque tokens** — RFC 7662 introspection with configurable modes: `never` (JWT only), `opaque_only` (default), or `always` (strict revocation checking).
+- **S2S identity** — `exchange_client_credentials` (OAuth2 client credentials grant) for service-to-service calls, producing the same `SecurityContext` pipeline.
+- **Caching** — JWKS and introspection results cached with TTL bounded by `min(token_exp - now, configured_ttl)`.
 
-Hierarchical multi-tenancy with tenant forest topology (see [`TENANT_MODEL.md`](../arch/authorization/TENANT_MODEL.md)):
-- **Isolation by default** — tenants cannot access each other's data
-- **Hierarchical access** — parent tenants may access child data (configurable)
-- **Barriers** — child tenants can opt out of parent visibility (`self_managed` flag)
+### AuthZ Resolver (PDP) — AuthZEN with Constraint Extensions
+
+> Source: [`DESIGN.md`](../arch/authorization/DESIGN.md) · [`AUTHZ_USAGE_SCENARIOS.md`](../arch/authorization/AUTHZ_USAGE_SCENARIOS.md)
+
+Plain AuthZEN point-in-time `true/false` decisions are insufficient for LIST queries with pagination. The design extends AuthZEN with **`context.constraints`** — a predicate DSL so the PEP receives **SQL-friendly filters** in O(1) PDP calls per query instead of per-row evaluation.
+
+**Constraint predicates:**
+
+| Predicate | Purpose |
+|---|---|
+| `eq(property, value)` | Exact match (e.g., `owner_id`) |
+| `in(property, values)` | Set membership |
+| `in_tenant_subtree(root_id, barrier_mode, status)` | Hierarchical tenant scoping via `tenant_closure` |
+| `in_group(group_ids)` | Resource group membership |
+| `in_group_subtree(group_ids)` | Hierarchical group membership |
+
+Constraints **OR** across alternatives, **AND** predicates within each constraint. PEP compiles constraints into `AccessScope` → SecureORM translates to SQL `WHERE` clauses.
+
+**Fail-closed PEP enforcement** — PEP denies access on:
+- Missing or `false` decision
+- Unreachable PDP
+- Missing constraints when `require_constraints: true`
+- Unknown predicates or property names
+- Empty predicate lists, empty `in`/`group_ids` values, or empty `constraints: []`
+
+**Capability negotiation** — PEP sends `capabilities`, `supported_properties`, and `require_constraints` with each evaluation request. The PDP must not emit unsupported property names and must degrade gracefully (expand groups to explicit `in` lists, or deny).
+
+**Token scopes as capability ceiling** — `effective_access = min(token_scopes, user_permissions)`. First-party apps typically carry `["*"]` (unrestricted).
+
+**Deny contract** — `decision: false` must include a `deny_reason` with a GTS `error_code`. Details are logged for audit but never exposed to clients (generic 403 only, no policy leakage).
+
+**404 vs 403 for point reads** — Constrained queries returning 0 rows yield 404, preventing existence leakage.
+
+**TOCTOU mitigation** — For UPDATE/DELETE, PEP prefetches the target attribute and uses `eq` predicates in the WHERE clause so the mutation is atomic with the authorization check.
+
+### Multi-Tenancy — Tenant Resolver
+
+> Source: [`TENANT_MODEL.md`](../arch/authorization/TENANT_MODEL.md) · [`modules/system/tenant-resolver/`](../../modules/system/tenant-resolver/)
+
+Hierarchical multi-tenancy with a **forest topology** (multiple independent trees, no synthetic super-root):
+
+- **Isolation by default** — every resource carries `owner_tenant_id` as the primary partition key; tenants cannot access each other's data.
+- **Hierarchical access** — parent tenants may access child data. Subject tenant (home identity) and context tenant (operational scope) are distinguished, enabling scoped admin patterns.
+- **Barriers** — child tenants set `self_managed = true` to create a privacy barrier. Parents cannot see that subtree's business data by default; `BarrierMode` controls per-resource-type relaxation (e.g., billing ignores barriers while tasks respect them).
+- **`tenant_closure` table** — materialized `(ancestor_id, descendant_id, barrier, descendant_status)` enables efficient `in_tenant_subtree` predicate compilation to SQL subqueries.
+
+**Tenant Resolver** is a plugin-based system module providing tenant graph operations (get, ancestors, descendants, `is_ancestor`) via `TenantResolverClient`:
+
+- **Plugin architecture** — gateway discovers a backend plugin by GTS vendor string; routes all calls through `TenantResolverPluginClient`. Built-in plugins: `static-tr-plugin` (in-memory tree from config), `single-tenant-tr-plugin` (enforces `ctx.subject_tenant_id()` as the only tenant).
+- **Barrier-aware traversal** — ancestor/descendant walks respect `self_managed` barriers and use visited sets for cycle safety.
+- **Status filtering** — queries filter by `TenantStatus`; filtering a suspended parent excludes its entire subtree.
+- **PIP role** — Tenant Resolver serves as a **Policy Information Point (PIP)**: the AuthZ plugin queries it for hierarchy data when building tenant constraints.
+
+### Resource Groups
+
+> Source: [`RESOURCE_GROUP_MODEL.md`](../arch/authorization/RESOURCE_GROUP_MODEL.md)
+
+Optional M:N, tenant-scoped resource grouping that acts as a **PIP** alongside the tenant hierarchy:
+
+- Groups enable attribute-based grouping of resources for authorization (e.g., project groups, organizational units).
+- The AuthZ plugin queries group membership/hierarchy when building `in_group` / `in_group_subtree` predicates.
+- `ResourceGroupReadHierarchy` supports hierarchical group traversal.
+- Group constraints are always paired with tenant predicates — defense in depth prevents cross-tenant leakage through group membership alone.
 
 ### GTS-Based Attribute Access Control (ABAC)
 
@@ -126,6 +193,7 @@ gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>]~
 
 - **Token claims** — authenticated user tokens carry GTS type patterns in `token_scopes`, defining the capability ceiling for the subject (e.g., `["gts.x.core.srr.resource.v1~*"]` grants access to all SRR resource types under that schema).
 - **Wildcard matching** — GTS supports segment-wise wildcard patterns (`*`), chain-aware evaluation, and attribute predicates for fine-grained policy expressions.
+- **Authorization resources** — PDP evaluations reference GTS-typed resources (e.g., `gts.x.core.oagw.proxy.v1~:invoke` for outbound gateway proxy access).
 - **Secure ORM integration** *(under development)* — the `ScopableEntity` trait supports a `type_col` dimension. The planned flow: AuthZ Resolver (PDP) evaluates GTS type constraints → compiles them into `AccessScope` → Secure ORM translates to SQL `WHERE` clauses, automatically filtering rows by type at the database level.
 
 **Current implementation status:**
@@ -137,11 +205,103 @@ gts.<vendor>.<package>.<namespace>.<type>.v<MAJOR>[.<MINOR>]~
 | Wildcard pattern matching (`GtsWildcard`) | Implemented |
 | GTS → UUID resolution (Types Registry) | Implemented |
 | Domain-level type filtering (e.g., SRR) | Implemented |
+| GTS-typed authorization resources | Implemented |
 | Secure ORM `type_col` auto-injection via PDP | Under development |
 
 Custom dylint rules (`DE0901`, `DE0902`) validate GTS identifier correctness at compile time, preventing malformed type strings from entering the codebase.
 
-## 4. Compile-Time Linting — Clippy
+## 4. Credentials Storage Architecture
+
+> Source: [`modules/credstore/`](../../modules/credstore/) · [`modules/credstore/docs/DESIGN.md`](../../modules/credstore/docs/DESIGN.md)
+
+Cyber Fabric provides a **plugin-based credential storage gateway** for managing secrets across the platform. The architecture separates the gateway (routing, authorization) from storage backends (plugin implementations).
+
+```
+Consumer → CredStoreClientV1 → Gateway Service → GTS Plugin Discovery
+         → CredStorePluginClientV1 (vendor backend)
+```
+
+### Secret Material Handling
+
+The SDK enforces secure handling of secret material at the type level:
+
+| Protection | Mechanism |
+|---|---|
+| **Memory safety** | `SecretValue` wraps `Vec<u8>` with `zeroize` on `Drop` — secret bytes are wiped from memory when no longer needed |
+| **Log safety** | `Debug` and `Display` implementations on `SecretValue` emit `[REDACTED]` — secrets cannot leak through logging |
+| **Serialization safety** | `SecretValue` does not implement `Serialize`/`Deserialize` — secrets cannot be accidentally persisted or transmitted |
+| **Key validation** | `SecretRef` validates keys as `[a-zA-Z0-9_-]+` (max 255 chars, no colons) — prevents injection via key names |
+| **Anti-enumeration** | Failed lookups return `Ok(None)`, not a distinct "forbidden" error — prevents existence probing |
+
+### Scoping Model
+
+Credentials are scoped along three visibility levels:
+
+- **Private** — `(tenant, owner, key)`: only the owning subject within a tenant can access.
+- **Tenant** — `(tenant, key)`: any subject within the tenant can access.
+- **Shared** — tenant-scoped with descendant visibility via gateway hierarchy walk-up.
+
+### Plugin Isolation
+
+The gateway enforces authorization via `SecurityContext`; plugins are **single-tenant-level adapters** that handle storage only. Built-in reference plugin: `static-credstore-plugin` (YAML-defined, in-memory — development/test use).
+
+### Planned Encryption at Rest
+
+The credential storage design specifies **AES-256-GCM** encryption with **per-tenant keys** and a `KeyProvider` abstraction supporting both `DatabaseKeyProvider` (co-located keys) and `ExternalKeyProvider` (Vault/KMS integration) for key–data separation.
+
+## 5. Outbound API Gateway (OAGW)
+
+> Source: [`modules/system/oagw/`](../../modules/system/oagw/) · [`modules/system/oagw/docs/DESIGN.md`](../../modules/system/oagw/docs/DESIGN.md)
+
+OAGW is a **centralized outbound API gateway** built on [Pingora](https://github.com/cloudflare/pingora). All platform traffic to external HTTP services is routed through OAGW, enforcing security and observability policies via a **Control Plane / Data Plane** architecture.
+
+### Authorization (Platform PEP)
+
+Every proxy request is authorized via `PolicyEnforcer` before routing:
+
+```rust
+self.policy_enforcer
+    .access_scope_with(
+        &ctx,
+        &resources::PROXY,                      // gts.x.core.oagw.proxy.v1~
+        actions::INVOKE,
+        None,
+        &AccessRequest::new()
+            .require_constraints(false)
+            .context_tenant_id(ctx.subject_tenant_id()),
+    )
+    .await?;
+```
+
+Ancestor bind flows (descendant reusing parent upstream aliases) have separate authorization actions: `bind`, `override_auth`, `override_rate`, `add_plugins`.
+
+### Credential Isolation
+
+Outbound authentication credentials are **never stored in OAGW configuration**. Auth configs reference secrets via `cred://` URIs, resolved through `CredStoreClientV1` under the caller's `SecurityContext`. OAuth2 client-credentials tokens are cached with keys scoped by `(tenant, subject, auth_method)`, preventing cross-tenant token reuse.
+
+### Auth Plugins
+
+Per-upstream/route authentication plugins modify outbound requests:
+
+| Plugin | Mechanism |
+|---|---|
+| `noop` | No authentication (pass-through) |
+| `api-key` | Injects API key from credential store |
+| `oauth2-client-credentials` | Client credentials grant (form/basic), token caching with tenant isolation |
+
+### Request Hardening
+
+| Control | Protection |
+|---|---|
+| **Path traversal** | Alias extracted from first path segment; only suffix is normalized |
+| **Body size** | Configurable cap (default 100 MB) |
+| **Content validation** | `Content-Type` and `Transfer-Encoding` validated before forwarding |
+| **Hop-by-hop headers** | Stripped per HTTP spec; internal headers controlled |
+| **CORS** | OPTIONS preflight returns 204 without upstream resolution; real requests validate `Origin`/method against config |
+| **Rate limiting** | Per-upstream/route limits enforced in the data plane |
+| **Error isolation** | `X-OAGW-Error-Source` header distinguishes gateway errors from upstream errors; RFC 9457 problem responses |
+
+## 6. Compile-Time Linting — Clippy
 
 > Source: [`Cargo.toml` (workspace.lints.clippy)](../../Cargo.toml) · [`clippy.toml`](../../clippy.toml)
 
@@ -165,7 +325,7 @@ The project enforces **90+ Clippy rules at `deny` level**, including the full `p
 - Stack size threshold of 512 KB
 - Max 2 boolean fields per struct (prevents boolean blindness)
 
-## 5. Compile-Time Linting — Custom Dylint Rules
+## 7. Compile-Time Linting — Custom Dylint Rules
 
 > Source: [`dylint_lints/`](../../dylint_lints/)
 
@@ -182,7 +342,7 @@ Project-specific architectural lints run on every CI build via `cargo dylint`. T
 
 The architectural lints in the `DE03xx` series enforce **strict layering** (contract → domain → infrastructure), preventing accidental coupling that could undermine security boundaries.
 
-## 6. Dependency Security — cargo-deny
+## 8. Dependency Security — cargo-deny
 
 > Source: [`deny.toml`](../../deny.toml) · CI job: `.github/workflows/ci.yml` (`security` job)
 
@@ -193,7 +353,7 @@ The architectural lints in the `DE03xx` series enforce **strict layering** (cont
 - **Source restrictions** — only `crates.io` allowed; unknown registries and git sources warned
 - **Duplicate version detection** — warns on multiple versions of the same crate in the dependency graph
 
-## 7. Cryptographic Stack & FIPS-140-3
+## 9. Cryptographic Stack & FIPS-140-3
 
 The project uses `aws-lc-rs` (via `rustls`) as its primary TLS cryptographic backend. JWT validation uses `jsonwebtoken` and `aliri`.
 
@@ -216,22 +376,22 @@ This switches the underlying cryptographic module from `aws-lc-sys` to `aws-lc-f
 
 **Important:** enabling the `fips` feature does not automatically make the entire application FIPS-140-3 compliant. Full compliance also depends on the deployment environment, operating system, and adherence to the AWS-LC security policy constraints. The `ring` crate remains in the dependency graph via `pingora-rustls` (certificate hashing only, not TLS crypto) and `aliri` (token lifecycle); these do not participate in TLS cryptographic operations.
 
-## 8. Continuous Fuzzing
+## 10. Continuous Fuzzing
 
 > Source: [`fuzz/`](../../fuzz/) · CI workflow: `.github/workflows/clusterfuzzlite.yml`
 
 Cyber Fabric uses [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) with [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/) for continuous fuzzing. Fuzzing discovers panics, logic bugs, and algorithmic complexity attacks in parsers and validators.
 
-**Current fuzz targets:**
+**Fuzz targets:**
 
-| Target | Priority | Component |
-|---|---|---|
-| `fuzz_odata_filter` | HIGH | OData `$filter` query parser |
-| `fuzz_odata_cursor` | HIGH | Pagination cursor decoder (base64+JSON) |
-| `fuzz_odata_orderby` | MEDIUM | OData `$orderby` token parser |
-| `fuzz_yaml_config` | HIGH | YAML configuration parser |
-| `fuzz_html_parser` | MEDIUM | HTML document parser |
-| `fuzz_pdf_parser` | MEDIUM | PDF document parser |
+| Target | Priority | Component | Status |
+|---|---|---|---|
+| `fuzz_odata_filter` | HIGH | OData `$filter` query parser | Implemented |
+| `fuzz_odata_cursor` | HIGH | Pagination cursor decoder (base64+JSON) | Implemented |
+| `fuzz_odata_orderby` | MEDIUM | OData `$orderby` token parser | Implemented |
+| `fuzz_yaml_config` | HIGH | YAML configuration parser | Planned |
+| `fuzz_html_parser` | MEDIUM | HTML document parser | Planned |
+| `fuzz_pdf_parser` | MEDIUM | PDF document parser | Planned |
 
 **CI integration:**
 - **On pull requests:** ClusterFuzzLite runs with address sanitizer for 10 minutes per target
@@ -245,7 +405,7 @@ make fuzz-run FUZZ_TARGET=fuzz_odata_filter FUZZ_SECONDS=300
 make fuzz-list     # List available targets
 ```
 
-## 9. Security Scanners in CI
+## 11. Security Scanners in CI
 
 Multiple automated scanners run on every pull request and/or on schedule:
 
@@ -255,13 +415,14 @@ Multiple automated scanners run on every pull request and/or on schedule:
 | **[OpenSSF Scorecard](https://scorecard.dev/)** | Supply-chain security posture (branch protection, dependency pinning, CI/CD hardness) | Weekly + branch protection changes |
 | **[cargo-deny](https://embarkstudios.github.io/cargo-deny/)** | RustSec advisories, license compliance, source restrictions | Every CI run |
 | **[ClusterFuzzLite](https://google.github.io/clusterfuzzlite/)** | Crash/panic/complexity bugs via fuzzing with address sanitizer | PRs to `main`/`develop` |
+| **[Dependabot](https://docs.github.com/en/code-security/dependabot)** | Dependency alerts (including malware), security updates, version updates | Continuous (repository-level) |
 | **[Snyk](https://snyk.io/)** | Dependency vulnerability scanning | Configured at repository/organization level |
 | **[Aikido](https://www.aikido.dev/)** | Application security posture management | Configured at repository/organization level |
 
 The OpenSSF Scorecard badge is displayed in the project README:
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cyberfabric/cyberfabric-core/badge)](https://scorecard.dev/viewer/?uri=github.com/cyberfabric/cyberfabric-core)
 
-## 10. PR Review Bots
+## 12. PR Review Bots
 
 Every pull request is reviewed by automated bots before human review:
 
@@ -271,7 +432,7 @@ Every pull request is reviewed by automated bots before human review:
 | **[Graphite](https://graphite.dev/)** | Manual trigger | Stacked PR management and review automation |
 | **[Claude Code](https://docs.anthropic.com/)** | Manual trigger | LLM-powered deep code review |
 
-## 11. Specification Templates & SDLC
+## 13. Specification Templates & SDLC
 
 > Source: [`docs/spec-templates/`](../spec-templates/) · [`docs/spec-templates/cf-sdlc/`](../spec-templates/cf-sdlc/)
 
@@ -283,7 +444,7 @@ Cyber Fabric follows a **spec-driven development** lifecycle where PRD and DESIG
 - **Testing strategy** — 90%+ code coverage target with explicit security testing category (unit, integration, e2e, security, performance)
 - **Git/PR record** — all changes flow through PRs with review and immutable merge/audit trail
 
-## 12. Repository Scaffolding — Cyber Fabric CLI
+## 14. Repository Scaffolding — Cyber Fabric CLI
 
 Cyber Fabric provides a CLI tool for scaffolding new repositories that automatically inherit the platform's security posture:
 
@@ -296,21 +457,22 @@ Cyber Fabric provides a CLI tool for scaffolding new repositories that automatic
 
 This ensures every new service or module repository starts with the same defense-in-depth baseline described in this document, eliminating configuration drift across the platform.
 
-## 13. Opportunities for Improvement
+## 15. Opportunities for Improvement
 
 The following areas have been identified for future hardening:
 
-1. **FIPS-140-3 compliance (remaining work)** — the `fips` feature flag is implemented and enables FIPS-validated TLS via `aws-lc-fips-sys`. Remaining items: replace `ring`-dependent libraries (`aliri` for token lifecycle, `pingora-rustls` for certificate hashing) to fully eliminate `ring` from the dependency graph; route JWT and hashing operations through `aws-lc-fips-sys`
-2. **Security guidelines in spec templates** — add explicit security checklist sections to PRD and DESIGN templates (threat modeling, data classification, authentication requirements per feature)
-3. **Security-focused dylint lints** — extend the `DE07xx` series with additional rules, such as:
+1. **FIPS-140-3 compliance (remaining work)** — the `fips` feature flag enables FIPS-validated TLS via `aws-lc-fips-sys`. Remaining: replace `ring`-dependent libraries (`aliri` for token lifecycle, `pingora-rustls` for certificate hashing) to eliminate `ring` from the dependency graph; route JWT and hashing operations through `aws-lc-fips-sys`
+2. **Secure ORM type-column auto-injection** — the `ScopableEntity` trait supports a `type_col` dimension, but automatic GTS type constraint injection from PDP → `AccessScope` → SQL `WHERE` is under development
+3. **Tenant Resolver access-control plugins** — the `Unauthorized` error variant is reserved in the SDK, but no production plugin enforces caller-vs-target authorization (the static plugin allows any caller to query any configured tenant; the single-tenant plugin uses identity matching only). A policy-backed plugin would enforce fine-grained tenant visibility
+4. **Security guidelines in spec templates** — add explicit security checklist sections to PRD and DESIGN templates (threat modeling, data classification, authentication requirements per feature)
+5. **Security-focused dylint lints** — extend the `DE07xx` series with additional rules:
    - Detecting hardcoded secrets or API keys
-   - Enforcing `SecretString` usage for sensitive fields
+   - Enforcing `SecretString` / `SecretValue` usage for sensitive fields
    - Flagging raw SQL string construction
    - Validating `SecurityContext` propagation in module handlers
-4. **Fuzz target expansion** — implement planned targets (`fuzz_yaml_config`, `fuzz_html_parser`, `fuzz_pdf_parser`, `fuzz_json_config`, `fuzz_markdown_parser`) and enable `fuzz_odata_filter` after [#377](https://github.com/cyberfabric/cyberfabric-core/issues/377) is resolved
-5. **Kani formal verification** — expand use of the [Kani Rust Verifier](https://model-checking.github.io/kani/) for proving safety properties on critical code paths (`make kani`)
-6. **SBOM generation** — add Software Bill of Materials generation to CI for supply-chain transparency
-7. **Dependency update automation** — configure Dependabot or Renovate for automated dependency updates with security advisory prioritization
+6. **Fuzz target expansion** — current implemented targets cover OData parsers (`fuzz_odata_filter`, `fuzz_odata_cursor`, `fuzz_odata_orderby`). Planned targets: `fuzz_yaml_config`, `fuzz_html_parser`, `fuzz_pdf_parser`, `fuzz_json_config`, `fuzz_markdown_parser`
+7. **Kani formal verification** — expand use of the [Kani Rust Verifier](https://model-checking.github.io/kani/) for proving safety properties on critical code paths (`make kani`)
+8. **SBOM generation** — add Software Bill of Materials generation to CI for supply-chain transparency
 
 ---
 
